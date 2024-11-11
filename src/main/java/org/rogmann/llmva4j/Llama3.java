@@ -748,7 +748,7 @@ final class ModelLoader {
                                 i -> baseTokens + i)
                         );
 
-        return new Tokenizer(vocabulary, merges, LLAMA_3_PATTERN, specialTokens);
+        return new Tokenizer(vocabulary, merges, LLAMA_3_PATTERN, specialTokens, null);
     }
 
     public static FloatTensor loadQuantized(GGMLTensorEntry entry) {
@@ -1190,6 +1190,8 @@ class Tokenizer {
     private final Vocabulary vocabulary;
     private final Map<Pair<Integer, Integer>, Integer> merges;
     private final Map<String, Integer> specialTokens;
+    private final int[] tokenTypes;
+
     /** buffer to store incomplete UTF-8 sequence */
     private final byte[] bufUtf8 = new byte[4];
     /** index in UTF-8 buffer */
@@ -1212,11 +1214,20 @@ class Tokenizer {
         return specialTokens.containsValue(tokenIndex);
     }
 
-    public Tokenizer(Vocabulary vocabulary, List<Pair<Integer, Integer>> merges, String regexPattern, Map<String, Integer> specialTokens) {
+    public int getTokenType(int tokenIndex) {
+        if (tokenTypes == null) {
+            throw new IllegalStateException("Tokenizer hasn't been constructed using tokenTypes");
+        }
+        return tokenTypes[tokenIndex];
+    }
+
+    public Tokenizer(Vocabulary vocabulary, List<Pair<Integer, Integer>> merges, String regexPattern,
+            Map<String, Integer> specialTokens, int[] tokenTypes) {
         this.vocabulary = vocabulary;
         this.compiledPattern = regexPattern != null ? Pattern.compile(regexPattern) : null;
         this.specialTokens = new HashMap<>(specialTokens);
         this.merges = new HashMap<>();
+        this.tokenTypes = tokenTypes;
         for (Pair<Integer, Integer> pair : merges) {
             int firstIndex = pair.first();
             int secondIndex = pair.second();
