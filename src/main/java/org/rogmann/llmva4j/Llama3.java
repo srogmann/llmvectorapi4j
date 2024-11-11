@@ -27,6 +27,7 @@ import java.io.PrintStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.foreign.ValueLayout.OfFloat;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -705,6 +706,7 @@ final class ModelLoader {
                     loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
                     loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
                     loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+                    null, null, null,
                     loadArrayOfFloatBuffer(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
                     loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")), // w1
                     loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")), // w2
@@ -752,7 +754,7 @@ final class ModelLoader {
     public static FloatTensor loadQuantized(GGMLTensorEntry entry) {
         GGMLType ggmlType = entry.ggmlType();
         return switch (ggmlType) {
-            //case F32 -> new F32FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
+            case F32 -> new F32FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
             case Q8_0 -> new Q8_0FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
             case Q4_0 -> new Q4_0FloatTensor(FloatTensor.numberOfElements(entry.shape()), entry.memorySegment());
             default -> throw new UnsupportedOperationException("Quantization format " + ggmlType);
@@ -829,6 +831,11 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
         public final FloatTensor[] wk; // (layer, n_kv_heads, head_size)
         public final FloatTensor[] wv; // (layer, n_kv_heads * head_size)
         public final FloatTensor[] wo; // (layer, n_heads * head_size, dim)
+
+        public final FloatTensor[] q_bias; // (layer, dim)
+        public final FloatTensor[] k_bias; // (layer, kv_dim)
+        public final FloatTensor[] v_bias; // (layer, kv_dim)
+
         public final FloatBuffer[] rms_ffn_weight; // (layer, dim)
         // weights for ffn
         public final FloatTensor[] w1; // (layer, hidden_dim, dim)
@@ -842,13 +849,21 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
         // (optional) classifier weights for the logits, on the last layer
         public final FloatTensor wcls; // (vocab_size, dim)
 
-        public Weights(FloatTensor token_embedding_table, FloatBuffer[] rms_att_weight, FloatTensor[] wq, FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo, FloatBuffer[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, FloatTensor[] w3, FloatBuffer rms_final_weight, FloatBuffer freq_cis_real, FloatBuffer freq_cis_imag, FloatTensor wcls) {
+        public Weights(FloatTensor token_embedding_table, FloatBuffer[] rms_att_weight,
+                FloatTensor[] wq, FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo,
+                FloatTensor[] q_bias, FloatTensor[] k_bias, FloatTensor[] v_bias,
+                FloatBuffer[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, FloatTensor[] w3, FloatBuffer rms_final_weight, FloatBuffer freq_cis_real, FloatBuffer freq_cis_imag, FloatTensor wcls) {
             this.token_embedding_table = token_embedding_table;
             this.rms_att_weight = rms_att_weight;
             this.wq = wq;
             this.wk = wk;
             this.wv = wv;
             this.wo = wo;
+
+            this.q_bias = q_bias;
+            this.k_bias = k_bias;
+            this.v_bias = v_bias;
+
             this.rms_ffn_weight = rms_ffn_weight;
             this.w1 = w1;
             this.w2 = w2;
@@ -1256,7 +1271,7 @@ class Tokenizer {
         return ids;
     }
 
-    private static List<String> findAll(Pattern pattern, String text) {
+    static List<String> findAll(Pattern pattern, String text) {
         List<String> allMatches = new ArrayList<>();
         Matcher matcher = pattern.matcher(text);
         while (matcher.find()) {
@@ -1316,7 +1331,7 @@ class Tokenizer {
         return ids;
     }
 
-    private static List<Integer> merge(List<Integer> ids, Pair<Integer, Integer> pair, int idx) {
+    static List<Integer> merge(List<Integer> ids, Pair<Integer, Integer> pair, int idx) {
         List<Integer> newids = new ArrayList<>();
         int i = 0;
         while (i < ids.size()) {
@@ -1350,7 +1365,7 @@ class Tokenizer {
      * To avoid that, we want lookup tables between utf-8 bytes and unicode strings.
      * And avoids mapping to whitespace/control characters the bpe code barfs on.
      */
-    private static Map<Integer, Integer> bytesToUnicode() {
+    static Map<Integer, Integer> bytesToUnicode() {
         List<Integer> bs = new ArrayList<>();
         IntStream.rangeClosed('!', '~').forEach(bs::add);
         IntStream.rangeClosed('¡', '¬').forEach(bs::add);
@@ -1386,7 +1401,7 @@ class Tokenizer {
         return encodeImpl(sb.toString());
     }
 
-    public static String replaceControlCharacters(int[] codePoints) {
+    static String replaceControlCharacters(int[] codePoints) {
         // we don't want to print control characters
         // which distort the output (e.g. \n or much worse)
         // https://stackoverflow.com/questions/4324790/removing-control-characters-from-a-string-in-python/19016117#19016117
@@ -1954,6 +1969,42 @@ final class Q8_0FloatTensor extends FloatTensor {
         }
 
         return result;
+    }
+}
+
+final class F32FloatTensor extends FloatTensor {
+
+    final int size;
+    final MemorySegment segment;
+
+    F32FloatTensor(int size, MemorySegment segment) {
+        this.size = size;
+        this.segment = segment;
+    }
+
+    @Override
+    int size() {
+        return size;
+    }
+
+    @Override
+    public GGMLType type() {
+        return GGMLType.F32;
+    }
+
+    @Override
+    public float getFloat(int index) {
+        return segment.get(OfFloat.JAVA_FLOAT, index * Float.BYTES);
+    }
+
+    @Override
+    public void setFloat(int index, float value) {
+        segment.set(OfFloat.JAVA_FLOAT, index * Float.BYTES, value);
+    }
+
+    @Override
+    FloatVector getFloatVector(VectorSpecies<Float> species, int offset) {
+        throw new UnsupportedOperationException("getFloatVector is not yet implemented.");
     }
 }
 
