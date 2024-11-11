@@ -29,6 +29,8 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Configuration;
 import org.rogmann.llmva4j.Qwen2Llama.State;
 import org.rogmann.llmva4j.Qwen2Llama.Weights;
@@ -43,7 +45,7 @@ public class Qwen2 {
         Qwen2ChatMLFormat chatFormat = new Qwen2ChatMLFormat(model.tokenizer());
         List<Integer> conversationTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
-            conversationTokens.addAll(chatFormat.encodeMessage(new Qwen2ChatMLFormat.Message(Qwen2ChatMLFormat.Role.SYSTEM, options.systemPrompt())));
+            conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
         }
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
@@ -59,8 +61,8 @@ public class Qwen2 {
                 if (List.of("quit", "exit").contains(userText)) {
                     break;
                 }
-                conversationTokens.addAll(chatFormat.encodeMessage(new Qwen2ChatMLFormat.Message(Qwen2ChatMLFormat.Role.USER, userText)));
-                conversationTokens.addAll(chatFormat.encodeHeader(new Qwen2ChatMLFormat.Message(Qwen2ChatMLFormat.Role.ASSISTANT, "")));
+                conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.USER, userText)));
+                conversationTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 List<Integer> responseTokens = Qwen2Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
                     if (options.stream()) {
@@ -95,10 +97,10 @@ public class Qwen2 {
         Qwen2ChatMLFormat chatFormat = new Qwen2ChatMLFormat(model.tokenizer());
         List<Integer> promptTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
-            promptTokens.addAll(chatFormat.encodeMessage(new Qwen2ChatMLFormat.Message(Qwen2ChatMLFormat.Role.SYSTEM, options.systemPrompt())));
+            promptTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
         }
-        promptTokens.addAll(chatFormat.encodeMessage(new Qwen2ChatMLFormat.Message(Qwen2ChatMLFormat.Role.USER, options.prompt())));
-        promptTokens.addAll(chatFormat.encodeHeader(new Qwen2ChatMLFormat.Message(Qwen2ChatMLFormat.Role.ASSISTANT, "")));
+        promptTokens.addAll(chatFormat.encodeMessage(new Message(Role.USER, options.prompt())));
+        promptTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
 
         Set<Integer> stopTokens = chatFormat.getStopTokens();
         List<Integer> responseTokens = Qwen2Llama.generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
@@ -671,7 +673,7 @@ class Qwen2ChatMLFormat {
         return Set.of(imEnd, endOfText);
     }
 
-    public List<Integer> encodeHeader(Qwen2ChatMLFormat.Message message) {
+    public List<Integer> encodeHeader(Message message) {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(imStart);
         tokens.addAll(this.tokenizer.encodeAsList(message.role().name()));
@@ -679,37 +681,24 @@ class Qwen2ChatMLFormat {
         return tokens;
     }
 
-    public List<Integer> encodeMessage(Qwen2ChatMLFormat.Message message) {
+    public List<Integer> encodeMessage(Message message) {
         List<Integer> tokens = this.encodeHeader(message);
         tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
         tokens.add(imEnd);
         return tokens;
     }
 
-    public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<Qwen2ChatMLFormat.Message> dialog) {
+    public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<Message> dialog) {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(imStart);
-        for (Qwen2ChatMLFormat.Message message : dialog) {
+        for (Message message : dialog) {
             tokens.addAll(this.encodeMessage(message));
         }
         if (appendAssistantTurn) {
             // Add the start of an assistant message for the model to complete.
-            tokens.addAll(this.encodeHeader(new Qwen2ChatMLFormat.Message(Qwen2ChatMLFormat.Role.ASSISTANT, "")));
+            tokens.addAll(this.encodeHeader(new Message(Role.ASSISTANT, "")));
         }
         return tokens;
     }
 
-    public record Message(Qwen2ChatMLFormat.Role role, String content) {
-    }
-
-    public record Role(String name) {
-        public static Qwen2ChatMLFormat.Role SYSTEM = new Qwen2ChatMLFormat.Role("system");
-        public static Qwen2ChatMLFormat.Role USER = new Qwen2ChatMLFormat.Role("user");
-        public static Qwen2ChatMLFormat.Role ASSISTANT = new Qwen2ChatMLFormat.Role("assistant");
-
-        @Override
-        public String toString() {
-            return name;
-        }
-    }
 }
