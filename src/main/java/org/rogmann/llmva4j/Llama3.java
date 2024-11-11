@@ -8,6 +8,9 @@
 // Author: Alfonso² Peterssen, extensions by Sascha Rogmann
 // Based on Andrej Karpathy's llama2.c and minbpe projects
 //
+// 2024-11-11: Parallel prompt processing (better TTFT)
+// 2024-11-11: Decoding of UTF-8 byte-sequences (display of emoticons)
+//
 // Supports llama.cpp's GGUF format, restricted to Q4_0 and Q8_0 quantized models
 // Multi-threaded matrix vector multiplication routines implemented using Java's Vector API
 // Simple CLI with --chat and --instruct mode
@@ -1152,6 +1155,15 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
     }
 }
 
+/** mask of a byte-sequence in UTF-8 encoding */
+record Utf8Mask(int mask, int pattern, int len) {
+    static final Utf8Mask[] MASKS = {
+            new Utf8Mask(0b11100000, 0b11000000, 2),
+            new Utf8Mask(0b11110000, 0b11100000, 3),
+            new Utf8Mask(0b11111000, 0b11110000, 4)
+    };
+}
+
 /**
  * Byte Pair Encoding tokenizer.
  * <p>
@@ -1163,6 +1175,12 @@ class Tokenizer {
     private final Vocabulary vocabulary;
     private final Map<Pair<Integer, Integer>, Integer> merges;
     private final Map<String, Integer> specialTokens;
+    /** buffer to store incomplete UTF-8 sequence */
+    private final byte[] bufUtf8 = new byte[4];
+    /** index in UTF-8 buffer */
+    private int currUtf8Index = 0;
+    /** current UTF-8 mask */
+    private Utf8Mask currUtf8Mask;
 
     public String regexPattern() {
         if (compiledPattern == null) {
@@ -1395,11 +1413,33 @@ class Tokenizer {
     public String decode(List<Integer> tokens) {
         String decoded = decodeImpl(tokens);
         int[] decodedBytesAsInts = decoded.codePoints().map(BYTE_DECODER::get).toArray();
-        byte[] rawBytes = new byte[decodedBytesAsInts.length];
+        byte[] rawBytes = new byte[decodedBytesAsInts.length + 3];
+        int indexRawByte = 0;
+    loopDecoded:
         for (int i = 0; i < decoded.length(); i++) {
-            rawBytes[i] = (byte) decodedBytesAsInts[i];
+            byte b = (byte) decodedBytesAsInts[i];
+            if (currUtf8Index == 0) {
+                for (Utf8Mask utf8Mask : Utf8Mask.MASKS) {
+                    if ((b & utf8Mask.mask()) == utf8Mask.pattern()) {
+                        currUtf8Mask = utf8Mask;
+                        bufUtf8[currUtf8Index++] = b;
+                        continue loopDecoded;
+                    }
+                }
+            }
+            if (currUtf8Index > 0 && currUtf8Mask != null) {
+                bufUtf8[currUtf8Index++] = b;
+                if (currUtf8Index == currUtf8Mask.len()) {
+                    System.arraycopy(bufUtf8, 0, rawBytes, indexRawByte, currUtf8Mask.len());
+                    indexRawByte += currUtf8Mask.len();
+                    currUtf8Index = 0;
+                    currUtf8Mask = null;
+                }
+                continue;
+            }
+            rawBytes[indexRawByte++] = b;
         }
-        return new String(rawBytes, StandardCharsets.UTF_8);
+        return new String(rawBytes, 0, indexRawByte, StandardCharsets.UTF_8);
     }
 }
 
