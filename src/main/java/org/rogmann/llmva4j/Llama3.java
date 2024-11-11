@@ -5,7 +5,7 @@
 //RUNTIME_OPTIONS --add-modules=jdk.incubator.vector
 //MAIN com.llama4j.Llama3
 
-// Author: Alfonso² Peterssen
+// Author: Alfonso² Peterssen, extensions by Sascha Rogmann
 // Based on Andrej Karpathy's llama2.c and minbpe projects
 //
 // Supports llama.cpp's GGUF format, restricted to Q4_0 and Q8_0 quantized models
@@ -82,42 +82,43 @@ public class Llama3 {
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
         }
         int startPosition = 0;
-        Scanner in = new Scanner(System.in);
-        while (true) {
-            System.out.print("> ");
-            System.out.flush();
-            String userText = in.nextLine();
-            if (List.of("quit", "exit").contains(userText)) {
-                break;
-            }
-            if (state == null) {
-                state = model.createNewState();
-            }
-            conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
-            conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
-            Set<Integer> stopTokens = chatFormat.getStopTokens();
-            List<Integer> responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
-                if (options.stream()) {
-                    if (!model.tokenizer().isSpecialToken(token)) {
-                        System.out.print(model.tokenizer().decode(List.of(token)));
-                    }
+        try (Scanner in = new Scanner(System.in)) {
+            while (true) {
+                System.out.print("> ");
+                System.out.flush();
+                String userText = in.nextLine();
+                if (List.of("quit", "exit").contains(userText)) {
+                    break;
                 }
-            });
-            // Include stop token in the prompt history, but not in the response displayed to the user.
-            conversationTokens.addAll(responseTokens);
-            startPosition = conversationTokens.size();
-            Integer stopToken = null;
-            if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
-                stopToken = responseTokens.getLast();
-                responseTokens.removeLast();
-            }
-            if (!options.stream()) {
-                String responseText = model.tokenizer().decode(responseTokens);
-                System.out.println(responseText);
-            }
-            if (stopToken == null) {
-                System.err.println("Ran out of context length...");
-                break;
+                if (state == null) {
+                    state = model.createNewState();
+                }
+                conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
+                conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+                Set<Integer> stopTokens = chatFormat.getStopTokens();
+                List<Integer> responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+                    if (options.stream()) {
+                        if (!model.tokenizer().isSpecialToken(token)) {
+                            System.out.print(model.tokenizer().decode(List.of(token)));
+                        }
+                    }
+                });
+                // Include stop token in the prompt history, but not in the response displayed to the user.
+                conversationTokens.addAll(responseTokens);
+                startPosition = conversationTokens.size();
+                Integer stopToken = null;
+                if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
+                    stopToken = responseTokens.getLast();
+                    responseTokens.removeLast();
+                }
+                if (!options.stream()) {
+                    String responseText = model.tokenizer().decode(responseTokens);
+                    System.out.println(responseText);
+                }
+                if (stopToken == null) {
+                    System.err.println("Ran out of context length...");
+                    break;
+                }
             }
         }
     }
@@ -343,6 +344,7 @@ final class GGUF {
         }
     }
 
+    @SuppressWarnings("preview")
     private void loadModelImpl(FileChannel fileChannel) throws IOException {
         // The header of the file.
         readHeader(fileChannel); // gguf_header_t header;
@@ -726,7 +728,7 @@ final class ModelLoader {
 
         int allTokens = vocabulary.size();
         int baseTokens = 128000; // assume all tokens after the base ones are special.
-        int reservedSpecialTokens = allTokens - baseTokens;
+        // int reservedSpecialTokens = allTokens - baseTokens;
         List<String> specialTokensList = Arrays.stream(vocabulary.tokens(), baseTokens, allTokens).toList();
 
         assert specialTokensList.stream().allMatch(token -> vocabulary.getIndex(token).isPresent());
@@ -1892,7 +1894,7 @@ final class RoPE {
                     float hiFreqWavelen = oldContextLength / hiFreqFactor;
                     float wavelen = (float) (2.0 * Math.PI / freq);
                     if (wavelen < hiFreqWavelen) {
-                        freq = freq;
+                        // nothing to do: freq = freq;
                     } else if (wavelen > loFreqWavelen) {
                         freq = freq / scaleFactor;
                     } else {
