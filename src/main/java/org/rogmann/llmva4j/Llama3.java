@@ -938,7 +938,6 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
         int kvMul = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
         float sqrtHeadSize = (float) Math.sqrt(headSize);
 
-        
         // We need states at each token.
         final int nTokens = tokens.length;
         FloatTensor[] x = allocate(state.x, nTokens, config.dim);
@@ -960,6 +959,7 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
         for (int l = 0; l < config.numberOfLayers; l++) {
             // attention rmsnorm
             // rmsnorm(state.xb, state.x, weights.rms_att_weight[l], dim, config.rmsNormEps);
+
             final int curLayer = l;
             Parallel.parallelFor(0, nTokens, t ->
                 rmsnorm(xb[t], x[t], weights.rms_att_weight[curLayer], dim, config.rmsNormEps)
@@ -1060,10 +1060,8 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
             Parallel.parallelFor(0, nTokens, t -> {
                 hb[t].mapInPlace(value -> value / (float) (1.0 + Math.exp(-value)));
-            });
 
-            // elementwise multiply with w3(x)
-            Parallel.parallelFor(0, nTokens, t -> {
+                // elementwise multiply with w3(x)
                 hb[t].multiplyInPlace(hb2[t]);
             });
 
