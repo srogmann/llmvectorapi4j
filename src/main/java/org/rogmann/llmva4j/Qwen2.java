@@ -662,6 +662,13 @@ class Qwen2Tokenizer {
     private final Map<String, Integer> specialTokens;
     private final int[] tokenTypes;
 
+    /** buffer to store incomplete UTF-8 sequence */
+    private final byte[] bufUtf8 = new byte[4];
+    /** index in UTF-8 buffer */
+    private int currUtf8Index = 0;
+    /** current UTF-8 mask */
+    private Utf8Mask currUtf8Mask;
+
     public String regexPattern() {
         if (compiledPattern == null) {
             return null;
@@ -817,11 +824,33 @@ class Qwen2Tokenizer {
     public String decode(List<Integer> tokens) {
         String decoded = decodeImpl(tokens);
         int[] decodedBytesAsInts = decoded.codePoints().map(Tokenizer.BYTE_DECODER::get).toArray();
-        byte[] rawBytes = new byte[decodedBytesAsInts.length];
+        byte[] rawBytes = new byte[decodedBytesAsInts.length + 3];
+        int indexRawByte = 0;
+    loopDecoded:
         for (int i = 0; i < decoded.length(); i++) {
-            rawBytes[i] = (byte) decodedBytesAsInts[i];
+            byte b = (byte) decodedBytesAsInts[i];
+            if (currUtf8Index == 0) {
+                for (Utf8Mask utf8Mask : Utf8Mask.MASKS) {
+                    if ((b & utf8Mask.mask()) == utf8Mask.pattern()) {
+                        currUtf8Mask = utf8Mask;
+                        bufUtf8[currUtf8Index++] = b;
+                        continue loopDecoded;
+                    }
+                }
+            }
+            if (currUtf8Index > 0 && currUtf8Mask != null) {
+                bufUtf8[currUtf8Index++] = b;
+                if (currUtf8Index == currUtf8Mask.len()) {
+                    System.arraycopy(bufUtf8, 0, rawBytes, indexRawByte, currUtf8Mask.len());
+                    indexRawByte += currUtf8Mask.len();
+                    currUtf8Index = 0;
+                    currUtf8Mask = null;
+                }
+                continue;
+            }
+            rawBytes[indexRawByte++] = b;
         }
-        return new String(rawBytes, StandardCharsets.UTF_8);
+        return new String(rawBytes, 0, indexRawByte, StandardCharsets.UTF_8);
     }
 }
 
