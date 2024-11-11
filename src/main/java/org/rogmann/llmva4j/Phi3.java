@@ -32,6 +32,9 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.Role;
+
 /**
  * Implementation of the phi-3 based model Phi-3-mini-4k-instruct.
  * 
@@ -48,7 +51,7 @@ public class Phi3 {
         List<Integer> conversationTokens = new ArrayList<>();
         ChatFormat chatFormat = new ChatFormat(model.tokenizer());
         if (options.systemPrompt() != null) {
-            conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
+            conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
         }
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
@@ -59,8 +62,8 @@ public class Phi3 {
                 if (List.of("quit", "exit").contains(userText)) {
                     break;
                 }
-                conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
-                conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+                conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.USER, userText)));
+                conversationTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 List<Integer> responseTokens = Phi3Model.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
@@ -106,10 +109,10 @@ public class Phi3 {
 
         List<Integer> promptTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
-            promptTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
+            promptTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
         }
-        promptTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, options.prompt())));
-        promptTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+        promptTokens.addAll(chatFormat.encodeMessage(new Message(Role.USER, options.prompt())));
+        promptTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
         if (options.echo()) {
             System.out.println("Prompt tokens: " + promptTokens);
         }
@@ -719,7 +722,7 @@ public class Phi3 {
             return Set.of(end);
         }
 
-        public List<Integer> encodeHeader(ChatFormat.Message message) {
+        public List<Integer> encodeHeader(Message message) {
             List<Integer> tokens = new ArrayList<>();
             String tokenRole = "<|" + message.role().name() + "|>";
             final Integer idxSpecial = tokenizer.getSpecialTokens().get(tokenRole);
@@ -732,38 +735,24 @@ public class Phi3 {
             return tokens;
         }
 
-        public List<Integer> encodeMessage(ChatFormat.Message message) {
+        public List<Integer> encodeMessage(Message message) {
             List<Integer> tokens = this.encodeHeader(message);
             tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
             tokens.add(tokenizer.getSpecialTokens().get("<|end|>"));
             return tokens;
         }
 
-        public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog) {
+        public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<Message> dialog) {
             List<Integer> tokens = new ArrayList<>();
             //tokens.add(beginOfText);
-            for (ChatFormat.Message message : dialog) {
+            for (Message message : dialog) {
                 tokens.addAll(this.encodeMessage(message));
             }
             if (appendAssistantTurn) {
                 // Add the start of an assistant message for the model to complete.
-                tokens.addAll(this.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+                tokens.addAll(this.encodeHeader(new Message(Role.ASSISTANT, "")));
             }
             return tokens;
-        }
-
-        public record Message(ChatFormat.Role role, String content) {
-        }
-
-        public record Role(String name) {
-            public static ChatFormat.Role SYSTEM = new ChatFormat.Role("system");
-            public static ChatFormat.Role USER = new ChatFormat.Role("user");
-            public static ChatFormat.Role ASSISTANT = new ChatFormat.Role("assistant");
-
-            @Override
-            public String toString() {
-                return name;
-            }
         }
     }
 
