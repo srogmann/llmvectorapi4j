@@ -908,14 +908,15 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
              *
              * @param idxToken     index of the token
              * @param layer        layer index
+             * @param head         attention-head
              * @param att          attention-tensor
              * @param attOffset    offset in the attention-tensor
              * @param attLength    size of the current block in the attention-tensor
              */
-            void accept(int idxToken, int layer, FloatTensor att, int attOffset, int attLength);
+            void accept(int idxToken, int layer, int head, FloatTensor att, int attOffset, int attLength);
         }
         
-        record AttentionDetail(int idxToken, int layer, int idx, float attValue) { };
+        record AttentionDetail(int idxToken, int layer, int head, int idx, float attValue) { };
 
         State(Configuration config, int batchsize) {
             this.batchsize = batchsize;

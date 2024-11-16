@@ -63,9 +63,9 @@ public class Qwen2 {
         }
         int attLimit = 3;
         final ConcurrentMap<Integer, List<AttentionDetail>> mapAttIdcs = new ConcurrentHashMap<>();
-        AttentionConsumer ac = (position, layer, att, offset, length) -> {
+        AttentionConsumer ac = (position, layer, head, att, offset, length) -> {
             List<AttentionDetail> attDetails = mapAttIdcs.computeIfAbsent(position, p -> Collections.synchronizedList(new ArrayList<>()));
-            IntStream.range(0, length).mapToObj(idx -> new AttentionDetail(position, layer, idx, att.getFloat(offset + idx)))
+            IntStream.range(0, length).mapToObj(idx -> new AttentionDetail(position, layer, head, idx, att.getFloat(offset + idx)))
                 .filter(det -> det.idxToken() != det.idx())
                 .filter(det -> det.idx() > 0)
                 .sorted(Comparator.comparing(AttentionDetail::attValue).reversed().thenComparing(AttentionDetail::layer))
@@ -137,14 +137,15 @@ public class Qwen2 {
                     List<AttentionDetail> top5 = attDetails.stream().sorted((v1, v2) -> (int) Math.signum(v2.attValue() - v1.attValue())).limit(5)
                         .collect(Collectors.toList());
                     
-                    List<String> top5Display = top5.stream().map(det -> String.format("Att[l=%2d, posRef=%3d(%-10.10s), score=%.4f]",
-                            det.layer(), det.idx(), token2Json.apply(conversationTokens.get(det.idx())), det.attValue(), Locale.US))
+                    List<String> top5Display = top5.stream().map(det -> String.format("Att[l=%2d, h=%2d, posRef=%3d(%-10.10s), score=%.4f]",
+                            det.layer(), det.head(), det.idx(),
+                            token2Json.apply(conversationTokens.get(det.idx())), det.attValue(), Locale.US))
                         .collect(Collectors.toList());
                     System.out.format("  Position %d (%-10.10s): %s%n", i,
                             token2Json.apply(conversationTokens.get(i)), top5Display);
 
                     String top5Json = top5.stream().map(det -> String.format(Locale.US, "{\"reference-token\": %d, \"layer\": %d, \"head\": %d, \"score\": %f, \"token-text\": %s}",
-                            det.idx(), det.layer(), 0, det.attValue(), token2Json.apply(conversationTokens.get(det.idx())))) 
+                            det.idx(), det.layer(), det.head(), det.attValue(), token2Json.apply(conversationTokens.get(det.idx())))) 
                         .collect(Collectors.joining(", "));
                     bw.write(top5Json);
                     bw.write("]}");
@@ -619,7 +620,7 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
                 
                 // Optional analysis of the attention.
                 if (attentionConsumer != null) {
-                    attentionConsumer.accept(position + idxToken, curLayer, state.att[idxToken], attOffset, position + idxToken + 1);
+                    attentionConsumer.accept(position + idxToken, curLayer, h, state.att[idxToken], attOffset, position + idxToken + 1);
                 }
 
                 // weighted sum of the values, store back into xb
