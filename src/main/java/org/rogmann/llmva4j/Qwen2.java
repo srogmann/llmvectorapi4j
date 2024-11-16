@@ -14,17 +14,29 @@
 //
 package org.rogmann.llmva4j;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.IntConsumer;
+import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -32,6 +44,8 @@ import java.util.stream.Stream;
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Configuration;
+import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
+import org.rogmann.llmva4j.Llama.State.AttentionDetail;
 import org.rogmann.llmva4j.Qwen2Llama.State;
 import org.rogmann.llmva4j.Qwen2Llama.Weights;
 
@@ -47,6 +61,17 @@ public class Qwen2 {
         if (options.systemPrompt() != null) {
             conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
         }
+        int attLimit = 3;
+        final ConcurrentMap<Integer, List<AttentionDetail>> mapAttIdcs = new ConcurrentHashMap<>();
+        AttentionConsumer ac = (position, layer, att, offset, length) -> {
+            List<AttentionDetail> attDetails = mapAttIdcs.computeIfAbsent(position, p -> Collections.synchronizedList(new ArrayList<>()));
+            IntStream.range(0, length).mapToObj(idx -> new AttentionDetail(position, layer, idx, att.getFloat(offset + idx)))
+                .filter(det -> det.idxToken() != det.idx())
+                .filter(det -> det.idx() > 0)
+                .sorted(Comparator.comparing(AttentionDetail::attValue).reversed().thenComparing(AttentionDetail::layer))
+                .limit(attLimit).forEach(attDetails::add);
+        };
+
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
             while (true) {
@@ -71,7 +96,7 @@ public class Qwen2 {
                             System.out.print(model.tokenizer().decode(List.of(token)));
                         }
                     }
-                });
+                }, ac);
                 // Include stop token in the prompt history, but not in the response displayed to the user.
                 conversationTokens.addAll(responseTokens);
                 startPosition = conversationTokens.size();
@@ -88,6 +113,46 @@ public class Qwen2 {
                     System.err.println("Ran out of context length...");
                     break;
                 }
+            }
+        }
+        String attTraceFile = System.getProperty("llama.attentionTrace.file");
+        if (attTraceFile != null) {
+            var file = new File(attTraceFile);
+            System.out.format("Top attentions (JSON-output in %s):%n", file);
+            try (OutputStream fos = new FileOutputStream(file);
+                 OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
+                 BufferedWriter bw = new BufferedWriter(osw)) {
+                IntFunction<String> token2Json = token -> JsonProcessing.escapeString(model.tokenizer().decode(List.of(token)));
+                bw.write('[');
+                for (int i = 0; i < conversationTokens.size(); i++) {
+                    List<AttentionDetail> attDetails = mapAttIdcs.get(i);
+                    if (attDetails == null) {
+                        continue;
+                    }
+                    if (i > 0) {
+                        bw.write(',');
+                    }
+                    bw.write(String.format("{\"tokenText\": %s, \"attentions\": [",
+                            token2Json.apply(conversationTokens.get(i))));
+                    List<AttentionDetail> top5 = attDetails.stream().sorted((v1, v2) -> (int) Math.signum(v2.attValue() - v1.attValue())).limit(5)
+                        .collect(Collectors.toList());
+                    
+                    List<String> top5Display = top5.stream().map(det -> String.format("Att[l=%2d, posRef=%3d(%-10.10s), score=%.4f]",
+                            det.layer(), det.idx(), token2Json.apply(conversationTokens.get(det.idx())), det.attValue(), Locale.US))
+                        .collect(Collectors.toList());
+                    System.out.format("  Position %d (%-10.10s): %s%n", i,
+                            token2Json.apply(conversationTokens.get(i)), top5Display);
+
+                    String top5Json = top5.stream().map(det -> String.format(Locale.US, "{\"reference-token\": %d, \"layer\": %d, \"head\": %d, \"score\": %f, \"token-text\": %s}",
+                            det.idx(), det.layer(), 0, det.attValue(), token2Json.apply(conversationTokens.get(det.idx())))) 
+                        .collect(Collectors.joining(", "));
+                    bw.write(top5Json);
+                    bw.write("]}");
+                    bw.write(System.lineSeparator());
+                }
+                bw.write(']');
+            } catch (IOException e) {
+                throw new RuntimeException("IO-error while writing " + file, e);
             }
         }
     }
@@ -110,7 +175,7 @@ public class Qwen2 {
                     System.out.print(model.tokenizer().decode(List.of(token)));
                 }
             }
-        });
+        }, null);
         if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
             responseTokens.removeLast();
         }
@@ -451,7 +516,7 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
         out.mapWithIndexInPlace(0, size, (value, index) -> weight.getFloat(index) * (finalss * x.getFloat(index)));
     }
 
-    static FloatTensor forward(Qwen2Llama model, State state, int[] tokens, int position) {
+    static FloatTensor forward(Qwen2Llama model, State state, int[] tokens, int position, AttentionConsumer attentionConsumer) {
         // a few convenience variables
         Llama.Configuration config = model.configuration();
         Weights weights = model.weights();
@@ -527,7 +592,7 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
 
             // multihead attention. iterate over all heads
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-                int token = (int) (ht / config.numberOfHeads);
+                int idxToken = (int) (ht / config.numberOfHeads);
                 int h = (int) (ht % config.numberOfHeads);
                 // get the query vector for this head
                 // float* q = s.q + h * headSize;
@@ -538,34 +603,39 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
                 int attOffset = h * config.contextLength;
 
                 // iterate over all timesteps, including the current one
-                for (int t = 0; t <= position + token; t++) {
+                for (int t = 0; t <= position + idxToken; t++) {
                     // get the key vector for this head and at this timestep
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
                     int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
                     // calculate the attention score as the dot product of q and k
-                    float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+                    float score = state.q[idxToken].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
-                    state.att[token].setFloat(attOffset + t, score);
+                    state.att[idxToken].setFloat(attOffset + t, score);
                 }
 
                 // softmax the scores to get attention weights, from 0..position inclusively
-                state.att[token].softmaxInPlace(attOffset, position + token + 1);
+                state.att[idxToken].softmaxInPlace(attOffset, position + idxToken + 1);
+                
+                // Optional analysis of the attention.
+                if (attentionConsumer != null) {
+                    attentionConsumer.accept(position + idxToken, curLayer, state.att[idxToken], attOffset, position + idxToken + 1);
+                }
 
                 // weighted sum of the values, store back into xb
                 // float* xb = s.xb + h * headSize;
                 int xbOffset = h * headSize;
                 // memset(xb, 0, headSize * sizeof(float));
-                state.xb[token].fillInPlace(xbOffset, headSize, 0f);
+                state.xb[idxToken].fillInPlace(xbOffset, headSize, 0f);
 
-                for (int t = 0; t <= position + token; t++) {
+                for (int t = 0; t <= position + idxToken; t++) {
                     // get the value vector for this head and at this timestep
-                    // float* v = s.value_cache + loff + t * dim + h * headSize;
+                    // float* v = s.value_cache + loff + t * dim + h * headSize;C
                     int vOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
                     // get the attention weight for this timestep
-                    float a = state.att[token].getFloat(attOffset + t);
+                    float a = state.att[idxToken].getFloat(attOffset + t);
                     // accumulate the weighted value into xb
-                    state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
+                    state.xb[idxToken].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                 }
             });
 
@@ -636,7 +706,7 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
      * @return list of generated/inferred tokens, including the stop token, if any e.g. does not include any token from the prompt
      */
     public static List<Integer> generateTokens(Qwen2Llama model, State state, int startPosition, List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler, boolean echo,
-                                               IntConsumer onTokenGenerated) {
+                                               IntConsumer onTokenGenerated, AttentionConsumer ac) {
         long startNanos = System.nanoTime();
         long startGen = 0;
         if (maxTokens < 0 || model.configuration().contextLength < maxTokens) {
@@ -660,7 +730,7 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
                 if (echo) {
                     System.out.format("position=%d, promptIdx=%d, promptSize=%d, tokens=%s%n", position, promptIndex, promptTokens.size(), Arrays.toString(tokens));
                 }
-                forward(model, state, tokens, position);
+                forward(model, state, tokens, position, ac);
                 position += nTokens - 1;
                 promptIndex += nTokens;
                 if (promptIndex < promptTokens.size()) {
@@ -668,7 +738,7 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
                 }
                 startGen = System.nanoTime();
             } else {
-                forward(model, state, new int[] {token}, position);
+                forward(model, state, new int[] {token}, position, ac);
             }
             nextToken = sampler.sampleToken(state.logits);
             if (echo) {

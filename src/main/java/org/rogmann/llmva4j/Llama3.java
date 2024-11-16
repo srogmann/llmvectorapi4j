@@ -898,6 +898,25 @@ record Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) 
 
         public int latestToken;
 
+        /**
+         * Interface for classes that consume attention data.
+         */
+        public interface AttentionConsumer {
+
+            /**
+             * Accepts attention data.
+             *
+             * @param idxToken     index of the token
+             * @param layer        layer index
+             * @param att          attention-tensor
+             * @param attOffset    offset in the attention-tensor
+             * @param attLength    size of the current block in the attention-tensor
+             */
+            void accept(int idxToken, int layer, FloatTensor att, int attOffset, int attLength);
+        }
+        
+        record AttentionDetail(int idxToken, int layer, int idx, float attValue) { };
+
         State(Configuration config, int batchsize) {
             this.batchsize = batchsize;
             this.x = allocate(batchsize, config.dim);
@@ -1460,6 +1479,40 @@ class Tokenizer {
             rawBytes[indexRawByte++] = b;
         }
         return new String(rawBytes, 0, indexRawByte, StandardCharsets.UTF_8);
+    }
+}
+
+final class JsonProcessing {
+    public static String escapeString(String s) {
+        var sb = new StringBuilder(s.length() + 10);
+        dumpString(sb, s);
+        return sb.toString();
+    }
+    
+    private static void dumpString(StringBuilder sb, String s) {
+        sb.append('"');
+        for (int i = 0; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            if (c == '"') {
+                sb.append("\\\"");
+            } else if ((c >= ' ' && c < 0x7f) || (c >= 0xa1 && c <= 0xff)) {
+                sb.append(c);
+            } else if (c == '\n') {
+                sb.append("\\n");
+            } else if (c == '\r') {
+                sb.append("\\r");
+            } else if (c == '\t') {
+                sb.append("\\t");
+            } else {
+                sb.append("\\u");
+                final String sHex = Integer.toHexString(c);
+                for (int j = sHex.length(); j < 4; j++) {
+                    sb.append('0');
+                }
+                sb.append(sHex);
+            }
+        }
+        sb.append('"');
     }
 }
 
