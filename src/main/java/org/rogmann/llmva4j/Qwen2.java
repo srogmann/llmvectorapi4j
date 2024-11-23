@@ -80,7 +80,7 @@ public class Qwen2 {
                 if (state == null) {
                     // State allocation can take some time for large context sizes,
                     // allocate the model state only after printing the user '>' prompt.
-                    state = model.createNewState(Llama3.BATCHSIZE);
+                    state = model.createNewState(Llama3.BATCH_SIZE);
                 }
                 String userText = in.nextLine();
                 if (List.of("quit", "exit").contains(userText)) {
@@ -159,7 +159,7 @@ public class Qwen2 {
     }
 
     static void runInstructOnce(Qwen2Llama model, Sampler sampler, Options options) {
-        State state = model.createNewState(Llama3.BATCHSIZE);
+        State state = model.createNewState(Llama3.BATCH_SIZE);
         Qwen2ChatMLFormat chatFormat = new Qwen2ChatMLFormat(model.tokenizer());
         List<Integer> promptTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
