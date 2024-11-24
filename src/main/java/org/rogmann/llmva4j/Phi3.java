@@ -34,6 +34,7 @@ import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
+import org.rogmann.llmva4j.Llama.Options;
 
 /**
  * Implementation of the phi-3 based model Phi-3-mini-4k-instruct.
@@ -46,7 +47,7 @@ import org.rogmann.llmva4j.ChatFormat.Role;
  */
 public class Phi3 {
     
-    static void runInteractive(Phi3Model model, Sampler sampler, Llama3.Options options) {
+    static void runInteractive(Phi3Model model, Sampler sampler, Options options) {
         Phi3.Phi3Model.State state = model.createNewState();
         List<Integer> conversationTokens = new ArrayList<>();
         ChatFormat chatFormat = new ChatFormat(model.tokenizer());
@@ -100,7 +101,7 @@ public class Phi3 {
     /** pattern to match UTF-8-tokens as &lt;0x0A&gt; */
     static Pattern P_UTF8_BYTE = Pattern.compile("<0x([0-9A-F]{2})>");
     
-    static void runInstructOnce(Phi3Model model, Sampler sampler, Llama3.Options options) {
+    static void runInstructOnce(Phi3Model model, Sampler sampler, Options options) {
         Phi3.Phi3Model.State state = model.createNewState();
         ChatFormat chatFormat = new ChatFormat(model.tokenizer());
         System.out.println(String.format("JVM: %s / %s / %s",
@@ -141,7 +142,7 @@ public class Phi3 {
     }
 
     public static void main(String[] args) throws IOException {
-        Llama3.Options options = Llama3.Options.parseOptions(args);
+        Options options = Options.parseOptions(args);
         Phi3Model model = Phi3ModelLoader.loadModel(options.modelPath(), options.maxTokens());
         Sampler sampler = Llama3.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         if (options.interactive()) {
