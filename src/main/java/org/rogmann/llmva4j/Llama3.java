@@ -19,6 +19,7 @@ package org.rogmann.llmva4j;
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.VectorOperators;
+import jdk.incubator.vector.VectorShape;
 import jdk.incubator.vector.VectorSpecies;
 import sun.misc.Unsafe;
 
@@ -1090,10 +1091,19 @@ final class GGUF {
     private int alignment;
     private int metadata_kv_count; // uint64_t
     private Map<String, Object> metadata;
+
+    public Map<String, GGUFTensorInfo> getTensorInfos() {
+        return tensorInfos;
+    }
+
     private Map<String, GGUFTensorInfo> tensorInfos;
     private long tensorDataOffset;
     private MemorySegment tensorData; // memory mapped tensor data
     private Map<String, GGMLTensorEntry> tensorEntries;
+
+    public long getTensorDataOffset() {
+        return tensorDataOffset;
+    }
 
     public Map<String, Object> getMetadata() {
         return metadata;
@@ -1165,7 +1175,6 @@ final class GGUF {
         }
     }
 
-    @SuppressWarnings("preview")
     private void loadModelImpl(FileChannel fileChannel) throws IOException {
         // The header of the file.
         readHeader(fileChannel); // gguf_header_t header;
@@ -1621,6 +1630,14 @@ record Llama(String modelName, Configuration configuration, Tokenizer tokenizer,
         public final float ropeTheta;
         public final int headSize;
 
+        Configuration withContextLength(int newContextLength) {
+            if (newContextLength < 0) {
+                return this; // no change
+            }
+            return new Configuration(this.dim, this.hiddenDim, this.numberOfLayers, this.numberOfHeads, this.numberOfKeyValueHeads, this.vocabularySize, newContextLength,
+                    this.sharedWeights, this.rmsNormEps, this.ropeTheta);
+        }
+
         public Configuration(int dim, int hiddenDim, int numberOfLayers, int numberOfHeads, int numberOfKeyValueHeads, int vocabularySize, int contextLength, boolean sharedWeights, float rmsNormEps, float ropeTheta) {
             this.dim = dim;
             this.hiddenDim = hiddenDim;
@@ -1750,7 +1767,9 @@ record Llama(String modelName, Configuration configuration, Tokenizer tokenizer,
     }
 
     static FloatTensor[] allocate(int numTokens, int... dims) {
-        return IntStream.range(0, numTokens).mapToObj(i -> ArrayFloatTensor.allocate(dims)).toArray(FloatTensor[]::new);
+        return IntStream.range(0, numTokens)
+                .mapToObj(i -> ArrayFloatTensor.allocate(dims))
+                .toArray(FloatTensor[]::new);
     }
 
     static void rmsnorm(FloatTensor out, FloatTensor x, FloatBuffer weight, int size, float rmsNormEps) {
@@ -2437,13 +2456,11 @@ enum GGMLType {
  * e.g. can represent a sequence of quantized floats.
  */
 abstract class FloatTensor {
-    static final boolean USE_VECTOR_API = Boolean.parseBoolean(System.getProperty("llama.VectorAPI", "true"));
+    static final int VECTOR_BIT_SIZE = Integer.getInteger("llama.VectorBitSize", VectorShape.preferredShape().vectorBitSize());
+    static final boolean USE_VECTOR_API = VECTOR_BIT_SIZE != 0;
 
-    // static final ValueLayout.OfFloat JAVA_FLOAT_LE =
-    // ValueLayout.JAVA_FLOAT.withOrder(ByteOrder.LITTLE_ENDIAN);
-    // static final ValueLayout.OfShort JAVA_SHORT_LE =
-    // ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
-
+    // static final ValueLayout.OfFloat JAVA_FLOAT_LE = ValueLayout.JAVA_FLOAT.withOrder(ByteOrder.LITTLE_ENDIAN);
+    // static final ValueLayout.OfShort JAVA_SHORT_LE = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
    
     // The use of Unsafe in this file is a temporary workaround to support native-image.
     static final Unsafe UNSAFE;
@@ -2469,7 +2486,9 @@ abstract class FloatTensor {
 
     // Preferred vector size for the fast multiplication routines.
     // (Apple Silicon) NEON only supports up-to 128bit vectors.
-    static final VectorSpecies<Float> F_SPECIES = FloatVector.SPECIES_PREFERRED.vectorBitSize() == 128 ? FloatVector.SPECIES_128 : FloatVector.SPECIES_256;
+    static final VectorSpecies<Float> F_SPECIES = USE_VECTOR_API
+            ? VectorShape.forBitSize(VECTOR_BIT_SIZE).withLanes(float.class)
+            : null;
 
     abstract int size();
 
@@ -2712,28 +2731,34 @@ final class Q4_0FloatTensor extends FloatTensor {
         for (; j < upperBound; j += GGMLType.Q4_0.getBlockSize(), blockOffset += GGMLType.Q4_0.getTypeSize()) {
             float wScaleValue = Float.float16ToFloat(readShort(thiz.memorySegment, blockOffset));
             var wScale = FloatVector.broadcast(F_SPECIES, wScaleValue);
-            var B_SPECIES = ByteVector.SPECIES_128;
-            var wBytes = ByteVector.fromMemorySegment(B_SPECIES, thiz.memorySegment, blockOffset + Float16.BYTES, ByteOrder.LITTLE_ENDIAN);
+            var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_128, thiz.memorySegment, blockOffset + Float16.BYTES, ByteOrder.LITTLE_ENDIAN);
             var loBytes = wBytes.and((byte) 0xF).sub((byte) 8);
             var hiBytes = wBytes.lanewise(VectorOperators.LSHR, 4).sub((byte) 8);
-            if (F_SPECIES.vectorBitSize() == 256) {
-                var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 0));
-                var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 1));
-                var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 2 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 0));
-                var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + 3 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 1));
-                val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
-            } else if (F_SPECIES.vectorBitSize() == 128) {
-                // This loop cannot be unrolled, why?
-                for (int i = 0; i < 2; ++i) {
-                    var tmp = i == 0 ? loBytes : hiBytes;
-                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 0) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 0));
-                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 1) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 1));
-                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 2) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 2));
-                    var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 3) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 3));
+            switch (F_SPECIES.vectorBitSize()) {
+                case 512 -> {
+                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 0));
+                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 0));
+                    val = sum0.add(sum2).fma(wScale, val);
+                }
+                case 256 -> {
+                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 0));
+                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(loBytes.castShape(F_SPECIES, 1));
+                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 2 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 0));
+                    var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + 3 * F_SPECIES.length()).mul(hiBytes.castShape(F_SPECIES, 1));
                     val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
                 }
-            } else {
-                throw new UnsupportedOperationException(F_SPECIES.toString());
+                case 128 -> {
+                    // This loop cannot be unrolled, why?
+                    for (int i = 0; i < 2; ++i) {
+                        var tmp = i == 0 ? loBytes : hiBytes;
+                        var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 0) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 0));
+                        var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 1) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 1));
+                        var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 2) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 2));
+                        var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + (i * 4 + 3) * F_SPECIES.length()).mul(tmp.castShape(F_SPECIES, 3));
+                        val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
+                    }
+                }
+                default -> throw new UnsupportedOperationException(F_SPECIES.toString());
             }
         }
         result += val.reduceLanes(VectorOperators.ADD);
@@ -2818,26 +2843,33 @@ final class Q8_0FloatTensor extends FloatTensor {
         for (; j < upperBound; j += GGMLType.Q8_0.getBlockSize(), blockOffset += GGMLType.Q8_0.getTypeSize()) {
             float wScaleValue = Float.float16ToFloat(readShort(thiz.memorySegment, blockOffset));
             var wScale = FloatVector.broadcast(F_SPECIES, wScaleValue);
-            if (F_SPECIES.vectorBitSize() == 256) {
-                var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, thiz.memorySegment, blockOffset + Float16.BYTES, ByteOrder.LITTLE_ENDIAN);
-                var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
-                var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
-                var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 2 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 2));
-                var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + 3 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 3));
-                val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
-            } else if (F_SPECIES.vectorBitSize() == 128) {
-                VectorSpecies<Byte> B_128 = ByteVector.SPECIES_128;
-                // This loop cannot be unrolled, why?
-                for (int i = 0; i < 2; ++i) {
-                    var wBytes = ByteVector.fromMemorySegment(B_128, thiz.memorySegment, blockOffset + Float16.BYTES + i * B_128.vectorByteSize(), ByteOrder.LITTLE_ENDIAN);
-                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
-                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
-                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 2 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 2));
-                    var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 3 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 3));
+            switch (F_SPECIES.vectorBitSize()) {
+                case 512 -> {
+                    var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, thiz.memorySegment, blockOffset + Float16.BYTES, ByteOrder.LITTLE_ENDIAN);
+                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
+                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
+                    val = sum0.add(sum1).fma(wScale, val);
+                }
+                case 256 -> {
+                    var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_256, thiz.memorySegment, blockOffset + Float16.BYTES, ByteOrder.LITTLE_ENDIAN);
+                    var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
+                    var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
+                    var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + 2 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 2));
+                    var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + 3 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 3));
                     val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
                 }
-            } else {
-                throw new UnsupportedOperationException(F_SPECIES.toString());
+                case 128 -> {
+                    // This loop cannot be unrolled, why?
+                    for (int i = 0; i < 2; ++i) {
+                        var wBytes = ByteVector.fromMemorySegment(ByteVector.SPECIES_128, thiz.memorySegment, blockOffset + Float16.BYTES + i * ByteVector.SPECIES_128.vectorByteSize(), ByteOrder.LITTLE_ENDIAN);
+                        var sum0 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 0 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 0));
+                        var sum1 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 1 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 1));
+                        var sum2 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 2 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 2));
+                        var sum3 = that.getFloatVector(F_SPECIES, thatOffset + j + i * 16 + 3 * F_SPECIES.length()).mul(wBytes.castShape(F_SPECIES, 3));
+                        val = sum0.add(sum1).add(sum2).add(sum3).fma(wScale, val);
+                    }
+                }
+                default -> throw new UnsupportedOperationException(F_SPECIES.toString());
             }
         }
         result += val.reduceLanes(VectorOperators.ADD);
