@@ -33,7 +33,7 @@ import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
 class LlamaHttpServer {
-    record LlamaHttpSession<S, W>(String sessionKey, Llama<S, W> model, Sampler sampler, Options options, S state, List<Integer> conversationTokens) { ; }
+    record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler, Options options, S state, List<Integer> conversationTokens) { ; }
 
     static enum JsonFormat {
         LLAMA_CPP,

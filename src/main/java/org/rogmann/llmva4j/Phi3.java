@@ -34,7 +34,12 @@ import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
+import org.rogmann.llmva4j.Llama.Configuration;
 import org.rogmann.llmva4j.Llama.Options;
+import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
+import org.rogmann.llmva4j.Llama.StateBase;
+import org.rogmann.llmva4j.Phi3.Phi3Model.State;
+import org.rogmann.llmva4j.Phi3.Phi3Model.Weights;
 
 /**
  * Implementation of the phi-3 based model Phi-3-mini-4k-instruct.
@@ -48,9 +53,9 @@ import org.rogmann.llmva4j.Llama.Options;
 public class Phi3 {
     
     static void runInteractive(Phi3Model model, Sampler sampler, Options options) {
-        Phi3.Phi3Model.State state = model.createNewState();
+        Phi3.Phi3Model.State state = model.createNewState(Llama.BATCH_SIZE);
         List<Integer> conversationTokens = new ArrayList<>();
-        ChatFormat chatFormat = new ChatFormat(model.tokenizer());
+        ChatFormat chatFormat = new Phi3ChatFormat(model.tokenizer());
         if (options.systemPrompt() != null) {
             conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
         }
@@ -102,8 +107,8 @@ public class Phi3 {
     static Pattern P_UTF8_BYTE = Pattern.compile("<0x([0-9A-F]{2})>");
     
     static void runInstructOnce(Phi3Model model, Sampler sampler, Options options) {
-        Phi3.Phi3Model.State state = model.createNewState();
-        ChatFormat chatFormat = new ChatFormat(model.tokenizer());
+        Phi3.Phi3Model.State state = model.createNewState(Llama.BATCH_SIZE);
+        ChatFormat chatFormat = new Phi3ChatFormat(model.tokenizer());
         System.out.println(String.format("JVM: %s / %s / %s",
                 System.getProperty("java.vm.vendor"), System.getProperty("java.vm.name"), System.getProperty("java.vm.version")));
         System.out.println("Prompt: " + options.prompt());
@@ -144,7 +149,7 @@ public class Phi3 {
     public static void main(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
         Phi3Model model = Phi3ModelLoader.loadModel(options.modelPath(), options.maxTokens());
-        Sampler sampler = Llama3.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
+        Sampler sampler = Llama.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         if (options.interactive()) {
             runInteractive(model, sampler, options);
         } else {
@@ -225,7 +230,7 @@ public class Phi3 {
                         ModelLoader.loadQuantized(tensorEntries.get("output.weight"))
                 );
 
-                return new Phi3Model(config, tokenizer, qw);
+                return new Phi3Model(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw);
             }
         }
 
@@ -254,9 +259,14 @@ public class Phi3 {
 
     }
 
-    record Phi3Model(Llama.Configuration configuration, Tokenizer tokenizer, Weights weights) {
-        public State createNewState() {
-            State state = new State(configuration());
+    static class Phi3Model extends Llama<State, Weights> {
+
+        public Phi3Model(String modelName, Configuration configuration, Tokenizer tokenizer, Weights weights) {
+            super(modelName, configuration, tokenizer, weights, new Phi3ChatFormat(tokenizer));
+        }
+
+        public State createNewState(int batchsize) {
+            State state = new State(configuration(), batchsize);
             state.latestToken = tokenizer.getSpecialTokens().get("<s>");
             return state;
         }
@@ -299,7 +309,7 @@ public class Phi3 {
             }
         }
 
-        public static final class State {
+        public static final class State extends StateBase {
 
             // current wave of activations
             public final FloatTensor x; // activation at current time stamp (dim,)
@@ -313,14 +323,13 @@ public class Phi3 {
             public final FloatTensor k; // query-key-value (nKVHeads * headDim,)
             public final FloatTensor v; // query-key-value (nKVHeads * headDim,)
             public final FloatTensor att; // buffer for scores/attention values (n_heads, seq_len)
-            public final FloatTensor logits; // output logits
             // kv cache
             public final FloatTensor[] keyCache;   // (n_layer, seq_len, kv_dim)
             public final FloatTensor[] valueCache; // (n_layer, seq_len, kv_dim)
 
-            public int latestToken;
+            State(Llama.Configuration config, int batchsize) {
+                super(config, batchsize);
 
-            State(Llama.Configuration config) {
                 this.x = ArrayFloatTensor.allocate(config.dim);
                 this.xb = ArrayFloatTensor.allocate(config.dim);
                 this.xb2 = ArrayFloatTensor.allocate(config.dim);
@@ -334,17 +343,17 @@ public class Phi3 {
                 this.k = ArrayFloatTensor.allocate(config.numberOfKeyValueHeads * headDim);
                 this.v = ArrayFloatTensor.allocate(config.numberOfKeyValueHeads * headDim);
                 this.att = ArrayFloatTensor.allocate(config.numberOfHeads, config.contextLength);
-                this.logits = ArrayFloatTensor.allocate(config.vocabularySize);
                 int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
                 this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
                 this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
             }
         }
 
-        static FloatTensor forward(Phi3Model model, Phi3Model.State state, int token, int position) {
+        public FloatTensor forward(State state, int[] tokens, int position, boolean computeLogits, AttentionConsumer ac) {
+            final int token = tokens[0];
             // a few convenience variables
-            Llama.Configuration config = model.configuration();
-            Phi3Model.Weights weights = model.weights();
+            Llama.Configuration config = configuration();
+            Weights weights = weights();
             int dim = config.dim;
             int headSize = config.headSize;
             int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
@@ -591,7 +600,9 @@ public class Phi3 {
             int promptIndex = 0;
             ByteArrayOutputStream baos = new ByteArrayOutputStream(5);
             for (int position = startPosition; position < maxTokens; ++position) {
-                Phi3Model.forward(model, state, token, position);
+                final int[] tokens = { token };
+                AttentionConsumer ac = null;
+                model.forward(state, tokens, position, true, ac);
                 if (promptIndex < promptTokens.size()) {
                     // Force-pick token from prompt.
                     nextToken = promptTokens.get(promptIndex++);
@@ -704,12 +715,13 @@ public class Phi3 {
     /**
      * Utility tailored for Llama 3 instruct prompt format.
      */
-    static class ChatFormat {
+    static class Phi3ChatFormat extends ChatFormat {
 
         protected final Tokenizer tokenizer;
         protected final int end;
 
-        public ChatFormat(Tokenizer tokenizer) {
+        public Phi3ChatFormat(Tokenizer tokenizer) {
+            super(tokenizer, "", "", "<|end|>", "", "", "");
             this.tokenizer = tokenizer;
             Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
             this.end = specialTokens.get("<|end|>");

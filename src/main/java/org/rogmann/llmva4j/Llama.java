@@ -44,6 +44,7 @@ import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 import java.util.function.LongConsumer;
 import java.util.random.RandomGenerator;
+import java.util.random.RandomGeneratorFactory;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -52,6 +53,7 @@ import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
+import org.rogmann.llmva4j.Llama.StateBase;
 
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
@@ -60,7 +62,7 @@ import jdk.incubator.vector.VectorShape;
 import jdk.incubator.vector.VectorSpecies;
 import sun.misc.Unsafe;
 
-public abstract class Llama<S, W> {
+public abstract class Llama<S extends StateBase, W> {
     /** batch-size used in prompt evaluation */
     static final int BATCH_SIZE = Integer.getInteger("llama.BatchSize", 16);
 
@@ -101,6 +103,33 @@ public abstract class Llama<S, W> {
     public abstract S createNewState(int batchsize);
     
     public abstract FloatTensor forward(S state, int[] tokens, int position, boolean computeLogits, AttentionConsumer attentionConsumer);
+
+    static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
+        Sampler sampler;
+        if (temperature == 0.0f) {
+            // greedy argmax sampling: take the token with the highest probability
+            sampler = Sampler.ARGMAX;
+        } else {
+            // we sample from this distribution to get the next token
+            RandomGenerator rng = RandomGeneratorFactory.getDefault().create(rngSeed);
+            Sampler innerSampler;
+            if (topp <= 0 || topp >= 1) {
+                // simply sample from the predicted probability distribution
+                innerSampler = new CategoricalSampler(rng);
+            } else {
+                // top-p (nucleus) sampling, clamping the least likely tokens to zero
+                innerSampler = new ToppSampler(vocabularySize, topp, rng);
+            }
+            sampler = logits -> {
+                // apply the temperature to the logits
+                logits.divideInPlace(0, logits.size(), temperature);
+                // apply softmax to the logits to get the probabilities for next token
+                logits.softmaxInPlace(0, logits.size());
+                return innerSampler.sampleToken(logits);
+            };
+        }
+        return sampler;
+    }
 
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
             float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo) {
@@ -2055,7 +2084,7 @@ abstract class ChatFormat {
         this.tokenizer = tokenizer;
         Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
         this.beginOfText = specialTokens.getOrDefault(tBeginOfText, -1);
-        this.startHeader = specialTokens.get(tStartHeader);
+        this.startHeader = specialTokens.getOrDefault(tStartHeader, -1);
         this.endHeader = specialTokens.get(tEndHeader);
         this.endOfTurn = specialTokens.getOrDefault(tEndOfTurn, -1);
         this.endOfText = specialTokens.getOrDefault(tEndOfText, -1);

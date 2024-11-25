@@ -188,7 +188,7 @@ public class Qwen2 {
     public static void main(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
         Qwen2Llama model = Qwen2ModelLoader.loadModel(options.modelPath(), options.maxTokens());
-        Sampler sampler = Llama3.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
+        Sampler sampler = Llama.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         String host = System.getProperty("llm.server.host");
         int port = Integer.parseInt(System.getProperty("llm.server.port", "8089"));
         if (host != null) {
