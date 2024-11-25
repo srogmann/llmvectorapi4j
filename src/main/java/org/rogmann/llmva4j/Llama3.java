@@ -1,21 +1,31 @@
 package org.rogmann.llmva4j;
 
 import java.io.IOException;
+import java.nio.FloatBuffer;
+import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
-import java.util.function.IntConsumer;
 import java.util.random.RandomGenerator;
 import java.util.random.RandomGeneratorFactory;
 
-import org.rogmann.llmva4j.Llama.Configuration;
-import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.State;
 import org.rogmann.llmva4j.Llama.Weights;
+import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
 
-public class Llama3 {
+public class Llama3 extends Llama<State, Weights> {
+
+    public Llama3(String modelName, Configuration configuration, Tokenizer tokenizer, Weights weights) {
+        super(modelName, configuration, tokenizer, weights, new Llama3ChatFormat(tokenizer));
+    }
+
+    public State createNewState(int batchsize) {
+        State state = new State(configuration(), batchsize);
+        state.latestToken = tokenizer().getSpecialTokens().get("<|begin_of_text|>");
+        return state;
+    }
 
     static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
         Sampler sampler;
@@ -44,10 +54,10 @@ public class Llama3 {
         return sampler;
     }
 
-    static void runInteractive(Llama model, Sampler sampler, Options options) {
+    static void runInteractive(Llama3 model, Sampler sampler, Options options) {
         Llama.State state = null;
         List<Integer> conversationTokens = new ArrayList<>();
-        ChatFormat chatFormat = new ChatFormat(model.tokenizer());
+        ChatFormat chatFormat = model.chatFormat();
         conversationTokens.add(chatFormat.beginOfText);
         if (options.systemPrompt() != null) {
             conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
@@ -101,10 +111,10 @@ public class Llama3 {
         }
     }
     
-    static FloatTensor forward(Llama model, State state, int[] tokens, int position, boolean computeLogits) {
+    public FloatTensor forward(State state, int[] tokens, int position, boolean computeLogits, AttentionConsumer attentionConsumer) {
         // a few convenience variables
-        Configuration config = model.configuration();
-        Weights weights = model.weights();
+        Configuration config = configuration();
+        Weights weights = weights();
         int dim = config.dim;
         int headSize = config.headSize;
         int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
@@ -253,96 +263,9 @@ public class Llama3 {
         return state.logits;
     }
 
-    /**
-     * LLM generation entry point, ingest prompt tokens and generates new tokens.
-     *
-     * <p>
-     * All prompt tokens are ingested first, then inference starts, until a stop token is found.
-     * The returned tokens only include generated/inferred tokens.
-     *
-     * @param model            model to run inference (including weights, configuration, tokenizer ...)
-     * @param state            state of the model e.g. key/value caches ... this is mutated by this call
-     * @param startPosition    start prompt ingestion + inference at this position in the context e.g. useful if state was kept across calls (chained generation). 0 implies run with no previous context.
-     * @param promptTokens     prompt tokens to ingest, all the prompt tokens will be ingested, given there's enough capacity left in the context
-     * @param stopTokens       set of tokens that abort generation during inference, stop tokens do not affect prompt ingestion
-     * @param maxTokens        maximum number of tokens (can go up to {@link Configuration#contextLength context length}
-     *                         if this value is negative or greater than {@link Configuration#contextLength context length}
-     * @param sampler          {@link Sampler strategy} used to select tokens
-     * @param echo             debugging flag, prints ALL, prompt and inferred tokens, to {@link System#err stderr}
-     * @param onTokenGenerated callback, if non-null, it's called every time a token is inferred e.g. it's not called when ingesting prompt tokens
-     * @return list of generated/inferred tokens, including the stop token, if any e.g. does not include any token from the prompt
-     */
-    public static List<Integer> generateTokens(Llama model, Llama.State state, int startPosition,
-            List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler, boolean echo,
-            IntConsumer onTokenGenerated) {
-        long startNanos = System.nanoTime();
-        long startGen = 0;
-        if (maxTokens < 0 || model.configuration().contextLength < maxTokens) {
-            maxTokens = model.configuration().contextLength;
-        }
-        List<Integer> generatedTokens = new ArrayList<>(maxTokens);
-        int token = state.latestToken; // BOS?
-        int nextToken;
-        int promptIndex = 0;
-        for (int position = startPosition; position < maxTokens; ++position) {
-            if (promptIndex < promptTokens.size()) {
-                final int nTokens = Math.min(promptTokens.size() - promptIndex, state.batchsize);
-                final int[] tokens = new int[nTokens];
-                for (int i = 0; i < nTokens; i++) {
-                    tokens[i] = promptTokens.get(promptIndex + i);
-                    if (echo) {
-                        // log prompt token (different color?)
-                        System.err.print(
-                                Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(tokens[i]))));
-                    }
-                }
-                if (echo) {
-                    System.out.format("position=%d, promptIdx=%d, promptSize=%d, tokens=%s%n", position, promptIndex,
-                            promptTokens.size(), Arrays.toString(tokens));
-                }
-                // Only compute logits on the very last batch.
-                boolean computeLogits = promptIndex + nTokens >= promptTokens.size();
-                forward(model, state, tokens, position, computeLogits);
-                position += nTokens - 1; // -1 -> incremented later in the for loop
-                promptIndex += nTokens;
-                if (promptIndex < promptTokens.size()) {
-                    continue;
-                }
-                startGen = System.nanoTime();
-            } else {
-                forward(model, state, new int[] { token }, position, true);
-            }
-            nextToken = sampler.sampleToken(state.logits);
-            if (echo) {
-                // log inferred token
-                System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(nextToken))));
-            }
-            generatedTokens.add(nextToken);
-            if (onTokenGenerated != null) {
-                onTokenGenerated.accept(nextToken);
-            }
-            if (stopTokens.contains(nextToken)) {
-                break;
-            }
-            state.latestToken = token = nextToken;
-        }
-
-        long elapsedNanos = System.nanoTime() - startNanos;
-        long promptNanos = startGen - startNanos;
-        long genNanos = elapsedNanos - startGen + startNanos;
-        int totalTokens = promptIndex + generatedTokens.size();
-        System.err.printf("%n%.2f tokens/s (%d) [PrEval %.2f tokens/s (%d), TokGen %.2f tokens/s (%d)]%n",
-                totalTokens / (elapsedNanos / 1_000_000_000.0), totalTokens,
-                promptTokens.size() / (promptNanos / 1_000_000_000.0), promptTokens.size(),
-                generatedTokens.size() / (genNanos / 1_000_000_000.0), generatedTokens.size());
-
-        return generatedTokens;
-    }
-
-
-    static void runInstructOnce(Llama model, Sampler sampler, Options options) {
+    static void runInstructOnce(Llama3 model, Sampler sampler, Options options) {
         Llama.State state = model.createNewState(Llama.BATCH_SIZE);
-        ChatFormat chatFormat = new ChatFormat(model.tokenizer());
+        ChatFormat chatFormat = new Llama3ChatFormat(model.tokenizer());
 
         List<Integer> promptTokens = new ArrayList<>();
         promptTokens.add(chatFormat.beginOfText);
@@ -371,7 +294,7 @@ public class Llama3 {
 
     public static void main(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
-        Llama model = ModelLoader.loadModel(options.modelPath(), options.maxTokens());
+        Llama3 model = Llama3ModelLoader.loadModel(options.modelPath(), options.maxTokens());
         Sampler sampler = selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         String host = System.getProperty("llm.server.host");
         int port = Integer.parseInt(System.getProperty("llm.server.port", "8089"));
@@ -381,6 +304,93 @@ public class Llama3 {
             runInteractive(model, sampler, options);
         } else {
             runInstructOnce(model, sampler, options);
+        }
+    }
+
+    public static class Llama3ChatFormat extends ChatFormat {
+        public Llama3ChatFormat(Tokenizer tokenizer) {
+            super(tokenizer, "<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>",
+                    "<|eot_id|>", "<|end_of_text|>", "<|eom_id|>");
+        }
+    }
+
+}
+
+final class Llama3ModelLoader {
+    private static final String TOKENIZER_LLAMA_3_MODEL = "gpt2";
+
+    private static Vocabulary loadVocabulary(Map<String, Object> metadata) {
+        String model = (String) metadata.get("tokenizer.ggml.model");
+        if (!TOKENIZER_LLAMA_3_MODEL.equals(model)) {
+            throw new IllegalArgumentException("expected " + TOKENIZER_LLAMA_3_MODEL + " but found " + model);
+        }
+        String[] tokens = (String[]) metadata.get("tokenizer.ggml.tokens");
+        return new Vocabulary(tokens, null);
+    }
+
+    public static Llama3 loadModel(Path ggufPath, int contextLength) throws IOException {
+        try (var ignored = Timer.log("Load LlaMa model")) {
+            GGUF gguf = GGUF.loadModel(ggufPath);
+            Map<String, Object> metadata = gguf.getMetadata();
+
+            Vocabulary vocabulary = loadVocabulary(metadata);
+            Tokenizer tokenizer = ModelLoader.createTokenizer(metadata, vocabulary);
+
+            int modelContextLength = (int) metadata.get("llama.context_length");
+            if (contextLength < 0 || modelContextLength < contextLength) {
+                contextLength = modelContextLength;
+            }
+
+            Llama.Configuration config = new Llama.Configuration(
+                    (int) metadata.get("llama.embedding_length"),
+                    (int) metadata.get("llama.feed_forward_length"),
+                    (int) metadata.get("llama.block_count"),
+                    (int) metadata.get("llama.attention.head_count"),
+
+                    metadata.containsKey("llama.attention.head_count_kv")
+                            ? (int) metadata.get("llama.attention.head_count_kv")
+                            : (int) metadata.get("llama.attention.head_count"),
+
+                    vocabulary.size(),
+                    contextLength,
+                    false,
+                    (float) metadata.getOrDefault("llama.attention.layer_norm_rms_epsilon", 1e-5f),
+                    (float) metadata.getOrDefault("llama.rope.freq_base", 10000f)
+            );
+
+            boolean ropeScaling = "Meta-Llama-3.1".equals(metadata.get("general.basename"));
+            float scaleFactor = 8;
+            float loFreqFactor = 1;
+            float hiFreqFactor = 3;
+            int oldContextLength = 8192;
+            Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta,
+                    ropeScaling, scaleFactor, loFreqFactor, hiFreqFactor, oldContextLength);
+            float[] ropeFreqsReal = ropeFreqs.first();
+            float[] ropeFreqsImag = ropeFreqs.second();
+
+            Map<String, GGMLTensorEntry> tensorEntries = gguf.getTensorEntries();
+            GGMLTensorEntry tokenEmbeddings = tensorEntries.get("token_embd.weight");
+            Llama.Weights qw = new Llama.Weights(
+                    ModelLoader.loadQuantized(tokenEmbeddings),
+                    ModelLoader.loadArrayOfFloatBuffer(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_norm.weight")),
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+                    null, null, null,
+                    ModelLoader.loadArrayOfFloatBuffer(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")), // w1
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")), // w2
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_up.weight")), // w3
+                    ModelLoader.toFloatBuffer(tensorEntries.get("output_norm.weight")),
+                    FloatBuffer.wrap(ropeFreqsReal),
+                    FloatBuffer.wrap(ropeFreqsImag),
+                    // If "output.weight" is not present then the embedding weights are tied/shared with the decoder.
+                    // This is commonly referred as "tie word embeddings".
+                    ModelLoader.loadQuantized(tensorEntries.getOrDefault("output.weight", tokenEmbeddings))
+            );
+
+            return new Llama3(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw);
         }
     }
 

@@ -20,10 +20,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
-import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -43,7 +41,8 @@ import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
-import org.rogmann.llmva4j.Llama.Configuration;
+import org.rogmann.llmva4j.Llama.Options;
+import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
 import org.rogmann.llmva4j.Llama.State.AttentionDetail;
 import org.rogmann.llmva4j.Qwen2Llama.State;
@@ -56,7 +55,7 @@ public class Qwen2 {
 
     static void runInteractive(Qwen2Llama model, Sampler sampler, Options options) {
         State state = null;
-        Qwen2ChatMLFormat chatFormat = new Qwen2ChatMLFormat(model.tokenizer());
+        ChatFormat chatFormat = model.chatFormat();
         List<Integer> conversationTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
             conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
@@ -186,108 +185,15 @@ public class Qwen2 {
         }
     }
 
-    record Options(Path modelPath, String prompt, String systemPrompt, String suffix, boolean interactive,
-                   float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo) {
-
-        Options {
-            require(modelPath != null, "Missing argument: --model <path> is required");
-            require(interactive || prompt != null, "Missing argument: --prompt is required in --instruct mode e.g. --prompt \"Why is the sky blue?\"");
-            require(0 <= temperature, "Invalid argument: --temperature must be non-negative");
-            require(0 <= topp && topp <= 1, "Invalid argument: --top-p must be within [0, 1]");
-        }
-
-        static void require(boolean condition, String messageFormat, Object... args) {
-            if (!condition) {
-                System.out.println("ERROR " + messageFormat.formatted(args));
-                System.out.println();
-                printUsage(System.out);
-                System.exit(-1);
-            }
-        }
-
-        static void printUsage(PrintStream out) {
-            out.println("Usage:  jbang Qwen2.java [options]");
-            out.println();
-            out.println("Options:");
-            out.println("  --model, -m <path>            required, path to .gguf file");
-            out.println("  --interactive, --chat, -i     run in chat mode");
-            out.println("  --instruct                    run in instruct (once) mode, default mode");
-            out.println("  --prompt, -p <string>         input prompt");
-            out.println("  --system-prompt, -sp <string> (optional) system prompt");
-            out.println("  --temperature, -temp <float>  temperature in [0,inf], default 0.1");
-            out.println("  --top-p <float>               p value in top-p (nucleus) sampling in [0,1] default 0.95");
-            out.println("  --seed <long>                 random seed, default System.nanoTime()");
-            out.println("  --max-tokens, -n <int>        number of steps to run for < 0 = limited by context length, default 512");
-            out.println("  --stream <boolean>            print tokens during generation; may cause encoding artifacts for non ASCII text, default true");
-            out.println("  --echo <boolean>              print ALL tokens to stderr, if true, recommended to set --stream=false, default false");
-            out.println();
-            out.println("Examples:");
-            out.println("  jbang Qwen2.java --model qwen2-7b-q4_0.gguf --chat");
-            out.println("  jbang Qwen2.java --model qwen2-7b-q4_0.gguf --prompt \"Tell me a joke\"");
-            out.println("  jbang Qwen2.java --model qwen2-7b-q4_0.gguf --prompt \"Print 5 emojis\" --stream=false");
-        }
-
-        static Options parseOptions(String[] args) {
-            String prompt = null;
-            String systemPrompt = null;
-            String suffix = null;
-            float temperature = 0.1f;
-            float topp = 0.95f;
-            Path modelPath = null;
-            long seed = System.nanoTime();
-            // Mistral models have a rather large context (> 32k)
-            // Cap max context length at 512 to run out-of-the-box on low memory devices
-            int maxTokens = 512;
-            boolean interactive = false;
-            boolean stream = true;
-            boolean echo = false;
-
-            for (int i = 0; i < args.length; i++) {
-                String optionName = args[i];
-                require(optionName.startsWith("-"), "Invalid option %s", optionName);
-                switch (optionName) {
-                    case "--interactive", "--chat", "-i" -> interactive = true;
-                    case "--instruct" -> interactive = false;
-                    case "--help", "-h" -> {
-                        printUsage(System.out);
-                        System.exit(0);
-                    }
-                    default -> {
-                        String nextArg;
-                        if (optionName.contains("=")) {
-                            String[] parts = optionName.split("=", 2);
-                            optionName = parts[0];
-                            nextArg = parts[1];
-                        } else {
-                            require(i + 1 < args.length, "Missing argument for option %s", optionName);
-                            nextArg = args[i + 1];
-                            i += 1; // skip arg
-                        }
-                        switch (optionName) {
-                            case "--prompt", "-p" -> prompt = nextArg;
-                            case "--system-prompt", "-sp" -> systemPrompt = nextArg;
-                            case "--suffix" -> suffix = nextArg;
-                            case "--temperature", "--temp" -> temperature = Float.parseFloat(nextArg);
-                            case "--top-p" -> topp = Float.parseFloat(nextArg);
-                            case "--model", "-m" -> modelPath = Paths.get(nextArg);
-                            case "--seed", "-s" -> seed = Long.parseLong(nextArg);
-                            case "--max-tokens", "-n" -> maxTokens = Integer.parseInt(nextArg);
-                            case "--stream" -> stream = Boolean.parseBoolean(nextArg);
-                            case "--echo" -> echo = Boolean.parseBoolean(nextArg);
-                            default -> require(false, "Unknown option: %s", optionName);
-                        }
-                    }
-                }
-            }
-            return new Options(modelPath, prompt, systemPrompt, suffix, interactive, temperature, topp, seed, maxTokens, stream, echo);
-        }
-    }
-
     public static void main(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
         Qwen2Llama model = Qwen2ModelLoader.loadModel(options.modelPath(), options.maxTokens());
         Sampler sampler = Llama3.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
-        if (options.interactive()) {
+        String host = System.getProperty("llm.server.host");
+        int port = Integer.parseInt(System.getProperty("llm.server.port", "8089"));
+        if (host != null) {
+            LlamaHttpServer.runHttpServer(model, sampler, options, host, port);
+        } else if (options.interactive()) {
             runInteractive(model, sampler, options);
         } else {
             runInstructOnce(model, sampler, options);
@@ -371,7 +277,7 @@ final class Qwen2ModelLoader {
                             : tokenEmbeddingTable // weights are shared
             );
 
-            return new Qwen2Llama(config, tokenizer, qw);
+            return new Qwen2Llama(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw);
         }
     }
 
@@ -408,7 +314,12 @@ final class Qwen2ModelLoader {
 
 }
 
-record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weights) {
+class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
+
+    public Qwen2Llama(String modelName, Configuration configuration, Tokenizer tokenizer, Weights weights) {
+        super(modelName, configuration, tokenizer, weights, new Qwen2ChatMLFormat(tokenizer));
+    }
+
     public State createNewState(int batchsize) {
         State state = new State(configuration(), batchsize);
         state.latestToken = tokenizer.getSpecialTokens().get("<|im_start|>");
@@ -467,10 +378,9 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
         }
     }
 
-    public static final class State {
+    public static final class State extends StateBase {
 
         // current wave of activations
-        public final int batchsize;
         public final FloatTensor[] x; // activation at current time stamp (dim,)
         public final FloatTensor[] xb; // same, but inside a residual branch (dim,)
         public final FloatTensor[] xb2; // an additional buffer just for convenience (dim,)
@@ -480,16 +390,14 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
         public final FloatTensor[] k; // key (kvDim,)
         public final FloatTensor[] v; // value (kvDim,)
         public final FloatTensor[] att; // buffer for scores/attention values (n_heads, seq_len)
-        public final FloatTensor logits; // output logits
         // kv cache
         public final FloatTensor[] keyCache;   // (n_layer, seq_len, kv_dim)
         public final FloatTensor[] valueCache; // (n_layer, seq_len, kv_dim)
 
-        public int latestToken;
-
         State(Configuration config, int batchsize) {
+            super(config, batchsize);
+
             int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
-            this.batchsize = batchsize;
             this.x = Llama.allocate(batchsize, config.dim);
             this.xb = Llama.allocate(batchsize, config.dim);
             this.xb2 = Llama.allocate(batchsize, config.dim);
@@ -500,7 +408,6 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
             this.v = Llama.allocate(batchsize, kvDim);
             this.att = Llama.allocate(batchsize, config.numberOfHeads, config.contextLength);
 
-            this.logits = ArrayFloatTensor.allocate(config.vocabularySize);
             this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
             this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
         }
@@ -517,10 +424,10 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
         out.mapWithIndexInPlace(0, size, (value, index) -> weight.getFloat(index) * (finalss * x.getFloat(index)));
     }
 
-    static FloatTensor forward(Qwen2Llama model, State state, int[] tokens, int position, AttentionConsumer attentionConsumer) {
+    public FloatTensor forward(State state, int[] tokens, int position, boolean computeLogits, AttentionConsumer attentionConsumer) {
         // a few convenience variables
-        Llama.Configuration config = model.configuration();
-        Weights weights = model.weights();
+        Llama.Configuration config = configuration();
+        Weights weights = weights();
         int dim = config.dim;
         int headSize = config.headSize;
         int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
@@ -731,7 +638,8 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
                 if (echo) {
                     System.out.format("position=%d, promptIdx=%d, promptSize=%d, tokens=%s%n", position, promptIndex, promptTokens.size(), Arrays.toString(tokens));
                 }
-                forward(model, state, tokens, position, ac);
+                boolean computeLogits = true;
+                model.forward(state, tokens, position, computeLogits, ac);
                 position += nTokens - 1;
                 promptIndex += nTokens;
                 if (promptIndex < promptTokens.size()) {
@@ -739,7 +647,8 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
                 }
                 startGen = System.nanoTime();
             } else {
-                forward(model, state, new int[] {token}, position, ac);
+                boolean computeLogits = true;
+                model.forward(state, new int[] {token}, position, computeLogits, ac);
             }
             nextToken = sampler.sampleToken(state.logits);
             if (echo) {
@@ -767,24 +676,22 @@ record Qwen2Llama(Configuration configuration, Tokenizer tokenizer, Weights weig
 
         return generatedTokens;
     }
+
 }
 
 /**
  * Utility tailored for the Chat Markup Language (ChatML) prompt format.
  */
-class Qwen2ChatMLFormat {
+class Qwen2ChatMLFormat extends ChatFormat {
 
-    protected final Tokenizer tokenizer;
     protected final int imStart; // beginOfText
-    protected final int endOfText; // endHeader
     protected final int imEnd; // endOfText
 
     public Qwen2ChatMLFormat(Tokenizer tokenizer) {
-        this.tokenizer = tokenizer;
-        Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
-        this.imStart = specialTokens.get("<|im_start|>");
-        this.imEnd = specialTokens.get("<|im_end|>");
-        this.endOfText = specialTokens.get("<|endoftext|>");
+        super(tokenizer, "", "<|im_start|>", "<|im_end|>", "", "<|end_of_text|>", "");
+
+        imStart = super.startHeader;
+        imEnd = super.endHeader;
     }
 
     public Tokenizer getTokenizer() {
