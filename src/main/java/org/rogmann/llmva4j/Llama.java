@@ -16,6 +16,8 @@
 // Simple CLI with --chat and --instruct mode
 package org.rogmann.llmva4j;
 
+import java.io.BufferedInputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.lang.foreign.Arena;
@@ -132,7 +134,8 @@ public abstract class Llama<S extends StateBase, W> {
     }
 
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
-            float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo) {
+            float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo,
+            Path stateCacheFolder, Path stateCache) {
 
         static final int DEFAULT_MAX_TOKENS = 512;
 
@@ -167,6 +170,8 @@ public abstract class Llama<S extends StateBase, W> {
             out.println("  --max-tokens, -n <int>        number of steps to run for < 0 = limited by context length, default " + DEFAULT_MAX_TOKENS);
             out.println("  --stream <boolean>            print tokens during generation; may cause encoding artifacts for non ASCII text, default true");
             out.println("  --echo <boolean>              print ALL tokens to stderr, if true, recommended to set --stream=false, default false");
+            out.println("  --state-cache-folder          optional folder to store state-caches (to save .ggsc-files)");
+            out.println("  --state-cache, -sc path       optional state-cache to be used (read .ggsc-file)");
             out.println();
             out.println("Examples:");
             out.println("  jbang Llama3.java --model llama3.2-1b-q4_0.gguf --prompt \"Tell me a joke\"");
@@ -188,6 +193,8 @@ public abstract class Llama<S extends StateBase, W> {
             boolean interactive = false;
             boolean stream = true;
             boolean echo = false;
+            Path stateCacheFolder = null;
+            Path stateCache = null;
 
             for (int i = 0; i < args.length; i++) {
                 String optionName = args[i];
@@ -220,16 +227,20 @@ public abstract class Llama<S extends StateBase, W> {
                             case "--max-tokens", "-n" -> maxTokens = Integer.parseInt(nextArg);
                             case "--stream" -> stream = Boolean.parseBoolean(nextArg);
                             case "--echo" -> echo = Boolean.parseBoolean(nextArg);
+                            case "--state-cache-folder" -> stateCacheFolder = Paths.get(nextArg);
+                            case "--state-cache", "-sc" -> stateCache = Paths.get(nextArg);
                             default -> require(false, "Unknown option: %s", optionName);
                         }
                     }
                 }
             }
-            return new Options(modelPath, prompt, systemPrompt, interactive, temperature, topp, seed, maxTokens, stream, echo);
+            return new Options(modelPath, prompt, systemPrompt, interactive, temperature, topp, seed, maxTokens, stream, echo,
+                    stateCacheFolder, stateCache);
         }
     }
 
     public static final class Configuration {
+        public final String modelGGUFName; // model GGUF-name
         public final int dim; // transformer dimension
         public final int hiddenDim; // for ffn layers
         public final int numberOfLayers; // number of layers
@@ -246,11 +257,12 @@ public abstract class Llama<S extends StateBase, W> {
             if (newContextLength < 0) {
                 return this; // no change
             }
-            return new Configuration(this.dim, this.hiddenDim, this.numberOfLayers, this.numberOfHeads, this.numberOfKeyValueHeads, this.vocabularySize, newContextLength,
+            return new Configuration(this.modelGGUFName, this.dim, this.hiddenDim, this.numberOfLayers, this.numberOfHeads, this.numberOfKeyValueHeads, this.vocabularySize, newContextLength,
                     this.sharedWeights, this.rmsNormEps, this.ropeTheta);
         }
 
-        public Configuration(int dim, int hiddenDim, int numberOfLayers, int numberOfHeads, int numberOfKeyValueHeads, int vocabularySize, int contextLength, boolean sharedWeights, float rmsNormEps, float ropeTheta) {
+        public Configuration(String modelGGUFName, int dim, int hiddenDim, int numberOfLayers, int numberOfHeads, int numberOfKeyValueHeads, int vocabularySize, int contextLength, boolean sharedWeights, float rmsNormEps, float ropeTheta) {
+            this.modelGGUFName = modelGGUFName;
             this.dim = dim;
             this.hiddenDim = hiddenDim;
             this.numberOfLayers = numberOfLayers;
@@ -323,11 +335,20 @@ public abstract class Llama<S extends StateBase, W> {
         public final int batchsize;
         public final FloatTensor logits; // output logits
 
+        // kv cache
+        final int kvDim;
+        public final FloatTensor[] keyCache; // (n_layer, seq_len, kv_dim)
+        public final FloatTensor[] valueCache; // (n_layer, seq_len, kv_dim)
+
         public int latestToken;
 
         public StateBase(Configuration config, int batchsize) {
             this.batchsize = batchsize;
             this.logits = ArrayFloatTensor.allocate(config.vocabularySize);
+            
+            this.kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
+            this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
+            this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
         }
     }
 
@@ -343,10 +364,6 @@ public abstract class Llama<S extends StateBase, W> {
         public final FloatTensor[] k; // key (dim,)
         public final FloatTensor[] v; // value (dim,)
         public final FloatTensor[] att; // buffer for scores/attention values (n_heads, seq_len)
-        // kv cache
-        public final FloatTensor[] keyCache; // (n_layer, seq_len, kv_dim)
-        public final FloatTensor[] valueCache; // (n_layer, seq_len, kv_dim)
-
 
         /**
          * Interface for classes that consume attention data.
@@ -380,10 +397,6 @@ public abstract class Llama<S extends StateBase, W> {
             this.k = allocate(batchsize, config.dim);
             this.v = allocate(batchsize, config.dim);
             this.att = allocate(batchsize, config.numberOfHeads, config.contextLength);
-
-            int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
-            this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
-            this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
         }
     }
 
@@ -403,18 +416,33 @@ public abstract class Llama<S extends StateBase, W> {
      *                         if this value is negative or greater than {@link Configuration#contextLength context length}
      * @param sampler          {@link Sampler strategy} used to select tokens
      * @param echo             debugging flag, prints ALL, prompt and inferred tokens, to {@link System#err stderr}
+     * @param stateCachePath   optional path of state-cache to read a key-value-cache
      * @param onTokenGenerated callback, if non-null, it's called every time a token is inferred e.g. it's not called when ingesting prompt tokens
+     * @param attentionConsumer optional consumer to trace attentions
      * @return list of generated/inferred tokens, including the stop token, if any e.g. does not include any token from the prompt
      */
     public static <S extends StateBase, W> List<Integer> generateTokens(Llama<S, W> model, S state, int startPosition,
-            List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler, boolean echo,
-            IntConsumer onTokenGenerated) {
-        AttentionConsumer attentionConsumer = null;
+            List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler,
+            Path stateCachePath, boolean echo, IntConsumer onTokenGenerated, AttentionConsumer attentionConsumer) {
         long startNanos = System.nanoTime();
         long startGen = 0;
         if (maxTokens < 0 || model.configuration().contextLength < maxTokens) {
             maxTokens = model.configuration().contextLength;
         }
+        
+        int startPositionGen = startPosition;
+        if (startPositionGen == 0 && stateCachePath != null) {
+            try (FileInputStream fis = new FileInputStream(stateCachePath.toFile());
+                    BufferedInputStream bis = new BufferedInputStream(fis)) {
+                System.out.printf("Read cached tokens in %s%n", stateCachePath);
+                StateCache stateCache = new StateCache(model.configuration(), state);
+                startPosition = stateCache.deserialize(bis, model.tokenizer(), promptTokens, echo);
+            } catch (IOException e) {
+                throw new RuntimeException("IO-exception while reading state-cache " + stateCachePath, e);
+            }
+            
+        }
+
         List<Integer> generatedTokens = new ArrayList<>(maxTokens);
         int token = state.latestToken; // BOS?
         int nextToken;

@@ -33,11 +33,9 @@ import java.util.Scanner;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
@@ -85,10 +83,21 @@ public class Qwen2 {
                 if (List.of("quit", "exit").contains(userText)) {
                     break;
                 }
+                if (userText.startsWith("/save:")) {
+                    StateCache stateCache = new StateCache(model.configuration(), state);
+                    try {
+                        String msg = stateCache.saveKVCache(userText, options.stateCacheFolder(), conversationTokens);
+                        System.out.println(msg);
+                    } catch (IllegalStateException e) {
+                        System.err.println(e.getMessage());
+                    }
+                    continue;
+                }
                 conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.USER, userText)));
                 conversationTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
-                List<Integer> responseTokens = Qwen2Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+                List<Integer> responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler,
+                        options.stateCache(), options.echo(), token -> {
                     if (options.stream()) {
                         int tokenType = model.tokenizer().getTokenType(token);
                         if (tokenType == 1 || tokenType == 6) {
@@ -168,14 +177,16 @@ public class Qwen2 {
         promptTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
 
         Set<Integer> stopTokens = chatFormat.getStopTokens();
-        List<Integer> responseTokens = Qwen2Llama.generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+        AttentionConsumer attentionConsumer = null;
+        List<Integer> responseTokens = Llama.generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler,
+                options.stateCache(), options.echo(), token -> {
             if (options.stream()) {
                 int tokenType = model.tokenizer().getTokenType(token);
                 if (tokenType == 1 || tokenType == 6) {
                     System.out.print(model.tokenizer().decode(List.of(token)));
                 }
             }
-        }, null);
+        }, attentionConsumer);
         if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
             responseTokens.removeLast();
         }
@@ -227,7 +238,9 @@ final class Qwen2ModelLoader {
                 contextLength = modelContextLength;
             }
 
+            String modelName = ggufPath.getFileName().toString();
             Llama.Configuration config = new Llama.Configuration(
+                    modelName,
                     (int) metadata.get("qwen2.embedding_length"),
                     (int) metadata.get("qwen2.feed_forward_length"),
                     (int) metadata.get("qwen2.block_count"),
@@ -390,14 +403,10 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
         public final FloatTensor[] k; // key (kvDim,)
         public final FloatTensor[] v; // value (kvDim,)
         public final FloatTensor[] att; // buffer for scores/attention values (n_heads, seq_len)
-        // kv cache
-        public final FloatTensor[] keyCache;   // (n_layer, seq_len, kv_dim)
-        public final FloatTensor[] valueCache; // (n_layer, seq_len, kv_dim)
 
         State(Configuration config, int batchsize) {
             super(config, batchsize);
 
-            int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
             this.x = Llama.allocate(batchsize, config.dim);
             this.xb = Llama.allocate(batchsize, config.dim);
             this.xb2 = Llama.allocate(batchsize, config.dim);
@@ -407,9 +416,6 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
             this.k = Llama.allocate(batchsize, kvDim);
             this.v = Llama.allocate(batchsize, kvDim);
             this.att = Llama.allocate(batchsize, config.numberOfHeads, config.contextLength);
-
-            this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
-            this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
         }
     }
 
@@ -592,89 +598,6 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
         weights.wcls.matmul(state.x[nTokens - 1], state.logits, config.vocabularySize, dim);
 
         return state.logits;
-    }
-
-    /**
-     * LLM generation entry point, ingest prompt tokens and generates new tokens.
-     *
-     * <p>
-     * All prompt tokens are ingested first, then inference starts, until a stop token is found.
-     * The returned tokens only include generated/inferred tokens.
-     *
-     * @param model            model to run inference (including weights, configuration, tokenizer ...)
-     * @param state            state of the model e.g. key/value caches ... this is mutated by this call
-     * @param startPosition    start prompt ingestion + inference at this position in the context e.g. useful if state was kept across calls (chained generation). 0 implies run with no previous context.
-     * @param promptTokens     prompt tokens to ingest, all the prompt tokens will be ingested, given there's enough capacity left in the context
-     * @param stopTokens       set of tokens that abort generation during inference, stop tokens do not affect prompt ingestion
-     * @param maxTokens        maximum number of tokens (can go up to {@link Configuration#contextLength context length}
-     *                         if this value is negative or greater than {@link Configuration#contextLength context length}
-     * @param sampler          {@link Sampler strategy} used to select tokens
-     * @param echo             debugging flag, prints ALL, prompt and inferred tokens, to {@link System#err stderr}
-     * @param onTokenGenerated callback, if non-null, it's called every time a token is inferred e.g. it's not called when ingesting prompt tokens
-     * @return list of generated/inferred tokens, including the stop token, if any e.g. does not include any token from the prompt
-     */
-    public static List<Integer> generateTokens(Qwen2Llama model, State state, int startPosition, List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler, boolean echo,
-                                               IntConsumer onTokenGenerated, AttentionConsumer ac) {
-        long startNanos = System.nanoTime();
-        long startGen = 0;
-        if (maxTokens < 0 || model.configuration().contextLength < maxTokens) {
-            maxTokens = model.configuration().contextLength;
-        }
-        List<Integer> generatedTokens = new ArrayList<>(maxTokens);
-        int token = state.latestToken; // BOS?
-        int nextToken;
-        int promptIndex = 0;
-        for (int position = startPosition; position < maxTokens; ++position) {
-            if (promptIndex < promptTokens.size()) {
-                final int nTokens = Math.min(promptTokens.size() - promptIndex, state.batchsize);
-                final int[] tokens = new int[nTokens];
-                for (int i = 0; i < tokens.length; i++) {
-                    tokens[i] = promptTokens.get(promptIndex + i);
-                    if (echo) {
-                        // log prompt token (different color?)
-                        System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(tokens[i]))));
-                    }
-                }
-                if (echo) {
-                    System.out.format("position=%d, promptIdx=%d, promptSize=%d, tokens=%s%n", position, promptIndex, promptTokens.size(), Arrays.toString(tokens));
-                }
-                boolean computeLogits = true;
-                model.forward(state, tokens, position, computeLogits, ac);
-                position += nTokens - 1;
-                promptIndex += nTokens;
-                if (promptIndex < promptTokens.size()) {
-                    continue;
-                }
-                startGen = System.nanoTime();
-            } else {
-                boolean computeLogits = true;
-                model.forward(state, new int[] {token}, position, computeLogits, ac);
-            }
-            nextToken = sampler.sampleToken(state.logits);
-            if (echo) {
-                // log inferred token
-                System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(nextToken))));
-            }
-            generatedTokens.add(nextToken);
-            if (onTokenGenerated != null) {
-                onTokenGenerated.accept(nextToken);
-            }
-            if (stopTokens.contains(nextToken)) {
-                break;
-            }
-            state.latestToken = token = nextToken;
-        }
-
-        long elapsedNanos = System.nanoTime() - startNanos;
-        long promptNanos = startGen - startNanos;
-        long genNanos = elapsedNanos - startGen + startNanos; 
-        int totalTokens = promptIndex + generatedTokens.size();
-        System.err.printf("%n%.2f tokens/s (%d) [PrEval %.2f tokens/s (%d), TokGen %.2f tokens/s (%d)]%n",
-                totalTokens / (elapsedNanos / 1_000_000_000.0), totalTokens,
-                promptTokens.size() / (promptNanos / 1_000_000_000.0), promptTokens.size(),
-                generatedTokens.size() / (genNanos / 1_000_000_000.0), generatedTokens.size());
-
-        return generatedTokens;
     }
 
 }

@@ -8,8 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
-import java.util.random.RandomGenerator;
-import java.util.random.RandomGeneratorFactory;
 
 import org.rogmann.llmva4j.Llama.State;
 import org.rogmann.llmva4j.Llama.Weights;
@@ -51,19 +49,31 @@ public class Llama3 extends Llama<State, Weights> {
                             options.maxTokens() - conversationTokens.size());
                     continue;
                 }
+                if (userText.startsWith("/save:")) {
+                    StateCache stateCache = new StateCache(model.configuration(), state);
+                    try {
+                        String msg = stateCache.saveKVCache(userText, options.stateCacheFolder(), conversationTokens);
+                        System.out.println(msg);
+                    } catch (IllegalStateException e) {
+                        System.err.println(e.getMessage());
+                    }
+                    continue;
+                }
                 if (state == null) {
                     state = model.createNewState(Llama.BATCH_SIZE);
                 }
                 conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
                 conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
-                List<Integer> responseTokens = generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+                AttentionConsumer attentionConsumer = null;
+                List<Integer> responseTokens = generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler,
+                        options.stateCache(), options.echo(), token -> {
                     if (options.stream()) {
                         if (!model.tokenizer().isSpecialToken(token)) {
                             System.out.print(model.tokenizer().decode(List.of(token)));
                         }
                     }
-                });
+                }, attentionConsumer);
                 // Include stop token in the prompt history, but not in the response displayed to the user.
                 conversationTokens.addAll(responseTokens);
                 startPosition = conversationTokens.size();
@@ -249,13 +259,15 @@ public class Llama3 extends Llama<State, Weights> {
         promptTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
 
         Set<Integer> stopTokens = chatFormat.getStopTokens();
-        List<Integer> responseTokens = generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+        AttentionConsumer attentionConsumer = null;
+        List<Integer> responseTokens = generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler,
+                options.stateCache(), options.echo(), token -> {
             if (options.stream()) {
                 if (!model.tokenizer().isSpecialToken(token)) {
                     System.out.print(model.tokenizer().decode(List.of(token)));
                 }
             }
-        });
+        }, attentionConsumer);
         if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
             responseTokens.removeLast();
         }
@@ -314,7 +326,9 @@ final class Llama3ModelLoader {
                 contextLength = modelContextLength;
             }
 
+            String modelName = ggufPath.getFileName().toString();
             Llama.Configuration config = new Llama.Configuration(
+                    modelName,
                     (int) metadata.get("llama.embedding_length"),
                     (int) metadata.get("llama.feed_forward_length"),
                     (int) metadata.get("llama.block_count"),

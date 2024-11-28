@@ -27,6 +27,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.rogmann.llmva4j.Llama.Options;
+import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
 import org.rogmann.llmva4j.Llama.StateBase;
 
 import com.sun.net.httpserver.HttpHandler;
@@ -219,7 +220,8 @@ class LlamaHttpServer {
                         long seed = readLong(mapRequest, "seed", optionsGlobal.seed());
                         boolean stream = readBoolean(mapRequest, "stream", optionsGlobal.stream());
                         Options optionsReq = new Options(optionsGlobal.modelPath(), "", optionsGlobal.systemPrompt(), true,
-                                temperature, topP, seed, maxComplTokens, stream, optionsGlobal.echo());
+                                temperature, topP, seed, maxComplTokens, stream,
+                                optionsGlobal.echo(), optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache());
                         System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
                                 temperature, topP, maxComplTokens, seed);
                         final List<Integer> conversationTokens = new ArrayList<>();
@@ -231,59 +233,76 @@ class LlamaHttpServer {
                 final Options options = httpSession.options();
                 final List<Integer> conversationTokens = httpSession.conversationTokens();
                 int startPosition = conversationTokens.size();
-
-                ChatFormat chatFormat = model.chatFormat();
-                chatMessages.stream().map(m -> String.format("[%s]> %s", m.role(), m.content())).forEach(System.out::println);
-                chatMessages.stream().map(chatFormat::encodeMessage).forEach(conversationTokens::addAll);
-                conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
-                //System.out.format("Tokens (start-pos %d): %s%n", startPosition, conversationTokens);
-                //System.out.println("Text: " + model.tokenizer().decode(conversationTokens).replace("\n", "\\n"));
-                Set<Integer> stopTokens = chatFormat.getStopTokens();
-
-                if (options.stream()) {
-                    // We use server-side events (SSE) for streaming.
-                    exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
-                    exchange.getResponseHeaders().add("Cache-Control", "no-cache");
-                    exchange.sendResponseHeaders(200, 0);
+                
+                String systemMessage = null;
+                if (chatMessages.size() == 1 && ChatFormat.Role.USER.equals(chatMessages.get(0).role())
+                        && chatMessages.get(0).content().startsWith("/save:")) {
+                    StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
+                    try {
+                        systemMessage = stateCache.saveKVCache(chatMessages.get(0).content(), options.stateCacheFolder(), conversationTokens);
+                    } catch (IllegalStateException e) {
+                        System.err.println(e.getMessage());
+                    }
                 }
 
                 final long tsCreation = System.currentTimeMillis();
-                List<Integer> responseTokens = Llama.generateTokens(model, httpSession.state(), startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler, options.echo(), token -> {
+                Integer stopToken = null;
+                String responseText = "";
+                if (systemMessage != null) {
+                    responseText = "#SYSTEM: " + systemMessage;
+                } else {
+                    ChatFormat chatFormat = model.chatFormat();
+                    chatMessages.stream().map(m -> String.format("[%s]> %s", m.role(), m.content())).forEach(System.out::println);
+                    chatMessages.stream().map(chatFormat::encodeMessage).forEach(conversationTokens::addAll);
+                    conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+                    //System.out.format("Tokens (start-pos %d): %s%n", startPosition, conversationTokens);
+                    //System.out.println("Text: " + model.tokenizer().decode(conversationTokens).replace("\n", "\\n"));
+                    Set<Integer> stopTokens = chatFormat.getStopTokens();
+    
                     if (options.stream()) {
-                        if (!model.tokenizer().isSpecialToken(token)) {
-                            String sToken = model.tokenizer().decode(List.of(token));
-                            System.out.print(sToken);
-
-                            Integer stopToken = null;
-                            Map<String, Object> mapResponse = createResponse(model, reqCounter, format, tsCreation,
-                                    stopToken, true, sToken);
-
-                            var sbOut = new StringBuilder();
-                            dumpJson(sbOut, mapResponse);
-                            byte[] buf = String.format("data: %s\n\n", sbOut).getBytes(StandardCharsets.UTF_8);
-                            try {
-                                exchange.getResponseBody().write(buf);
-                                exchange.getResponseBody().flush();
-                            } catch (IOException e) {
-                                System.err.format("%nRemove session (%s)%n", sessionKey);
-                                mapSessions.remove(sessionKey);
-                                throw new IllegalStateException("IO-error while sending response", e);
+                        // We use server-side events (SSE) for streaming.
+                        exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
+                        exchange.getResponseHeaders().add("Cache-Control", "no-cache");
+                        exchange.sendResponseHeaders(200, 0);
+                    }
+    
+                    final Integer iStopToken = stopToken;
+                    AttentionConsumer attentionConsumer = null;;
+                    List<Integer> responseTokens = Llama.generateTokens(model, httpSession.state(), startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler,
+                            options.stateCache(), options.echo(), token -> {
+                        if (options.stream()) {
+                            if (!model.tokenizer().isSpecialToken(token)) {
+                                String sToken = model.tokenizer().decode(List.of(token));
+                                System.out.print(sToken);
+    
+                                Map<String, Object> mapResponse = createResponse(model, reqCounter, format, tsCreation,
+                                        iStopToken, true, sToken);
+    
+                                var sbOut = new StringBuilder();
+                                dumpJson(sbOut, mapResponse);
+                                byte[] buf = String.format("data: %s\n\n", sbOut).getBytes(StandardCharsets.UTF_8);
+                                try {
+                                    exchange.getResponseBody().write(buf);
+                                    exchange.getResponseBody().flush();
+                                } catch (IOException e) {
+                                    System.err.format("%nRemove session (%s)%n", sessionKey);
+                                    mapSessions.remove(sessionKey);
+                                    throw new IllegalStateException("IO-error while sending response", e);
+                                }
                             }
                         }
+                    }, attentionConsumer);
+                    // Include stop token in the prompt history, but not in the response displayed to the user.
+                    conversationTokens.addAll(responseTokens);
+                    startPosition = conversationTokens.size();
+                    if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
+                        stopToken = responseTokens.getLast();
+                        responseTokens.removeLast();
                     }
-                });
-                // Include stop token in the prompt history, but not in the response displayed to the user.
-                conversationTokens.addAll(responseTokens);
-                startPosition = conversationTokens.size();
-                Integer stopToken = null;
-                if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
-                    stopToken = responseTokens.getLast();
-                    responseTokens.removeLast();
-                }
-                String responseText = "";
-                if (!options.stream()) {
-                    responseText = model.tokenizer().decode(responseTokens);
-                    System.out.println(responseText);
+                    if (!options.stream()) {
+                        responseText = model.tokenizer().decode(responseTokens);
+                        System.out.println(responseText);
+                    }
                 }
                 Map<String, Object> mapResponse = createResponse(model, reqCounter, format, tsCreation,
                         stopToken, options.stream(), responseText);

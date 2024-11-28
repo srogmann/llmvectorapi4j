@@ -190,7 +190,9 @@ public class Phi3 {
                     contextLength = modelContextLength;
                 }
 
+                String modelName = ggufPath.getFileName().toString();
                 Llama.Configuration config = new Llama.Configuration(
+                        modelName,
                         (int) metadata.get(modelPrefix + "embedding_length"),
                         (int) metadata.get(modelPrefix + "feed_forward_length"),
                         (int) metadata.get(modelPrefix + "block_count"),
@@ -343,7 +345,6 @@ public class Phi3 {
                 this.k = ArrayFloatTensor.allocate(config.numberOfKeyValueHeads * headDim);
                 this.v = ArrayFloatTensor.allocate(config.numberOfKeyValueHeads * headDim);
                 this.att = ArrayFloatTensor.allocate(config.numberOfHeads, config.contextLength);
-                int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
                 this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
                 this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
             }
