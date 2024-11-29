@@ -18,6 +18,7 @@ import java.util.regex.Pattern;
 
 import org.rogmann.llmva4j.Llama.Configuration;
 import org.rogmann.llmva4j.Llama.StateBase;
+import org.rogmann.llmva4j.Llama.TokenDetails;
 
 public class StateCache {
 
@@ -42,7 +43,7 @@ public class StateCache {
         valueCache = state.valueCache;
     }
     
-    public String saveKVCache(String userText, Path stateCacheFolder, List<Integer> tokens) {
+    public String saveKVCache(String userText, Path stateCacheFolder, List<TokenDetails> tokens) {
         Pattern pSaveName = Pattern.compile("/save:([A-Za-z0-9_][A-Za-z0-9_.-]+)");
         Matcher m = pSaveName.matcher(userText);
         if (!m.matches()) {
@@ -64,7 +65,7 @@ public class StateCache {
         return String.format("Wrote KV-cache (%d tokens) into file %s", tokens.size(), fileName);
     }
 
-    void serialize(OutputStream os, List<Integer> tokens) throws IOException {
+    void serialize(OutputStream os, List<TokenDetails> tokens) throws IOException {
         if (!(keyCache[0] instanceof ArrayFloatTensor)) {
             throw new UnsupportedOperationException("keyCache has unexpected type: " + keyCache.getClass());
         }   
@@ -83,7 +84,7 @@ public class StateCache {
         os.write(bb.array(), 0, 24);
         os.write(bufName);
         for (int i = 0; i < tokens.size(); i++) {
-            bb.putInt(4 * i, tokens.get(i).intValue());
+            bb.putInt(4 * i, tokens.get(i).token());
         }
         os.write(bb.array(), 0, 4 * tokens.size());
         for (int nLayer = 0; nLayer < config.numberOfLayers; nLayer++) {

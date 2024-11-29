@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
@@ -41,7 +42,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 import java.util.function.LongConsumer;
@@ -55,7 +59,9 @@ import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
+import org.rogmann.llmva4j.Llama.State.AttentionDetail;
 import org.rogmann.llmva4j.Llama.StateBase;
+import org.rogmann.llmva4j.Llama.TokenDetails;
 
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
@@ -135,7 +141,7 @@ public abstract class Llama<S extends StateBase, W> {
 
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
             float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo,
-            Path stateCacheFolder, Path stateCache) {
+            Path stateCacheFolder, Path stateCache, int attentionTrace) {
 
         static final int DEFAULT_MAX_TOKENS = 512;
 
@@ -172,6 +178,7 @@ public abstract class Llama<S extends StateBase, W> {
             out.println("  --echo <boolean>              print ALL tokens to stderr, if true, recommended to set --stream=false, default false");
             out.println("  --state-cache-folder          optional folder to store state-caches (to save .ggsc-files)");
             out.println("  --state-cache, -sc path       optional state-cache to be used (read .ggsc-file)");
+            out.println("  --attention-trace <int>       maximum number of attentions to be traced per token");
             out.println();
             out.println("Examples:");
             out.println("  jbang Llama3.java --model llama3.2-1b-q4_0.gguf --prompt \"Tell me a joke\"");
@@ -195,6 +202,7 @@ public abstract class Llama<S extends StateBase, W> {
             boolean echo = false;
             Path stateCacheFolder = null;
             Path stateCache = null;
+            int attentionTrace = 0;
 
             for (int i = 0; i < args.length; i++) {
                 String optionName = args[i];
@@ -229,13 +237,14 @@ public abstract class Llama<S extends StateBase, W> {
                             case "--echo" -> echo = Boolean.parseBoolean(nextArg);
                             case "--state-cache-folder" -> stateCacheFolder = Paths.get(nextArg);
                             case "--state-cache", "-sc" -> stateCache = Paths.get(nextArg);
+                            case "--attention-trace" -> attentionTrace = Integer.parseInt(nextArg);
                             default -> require(false, "Unknown option: %s", optionName);
                         }
                     }
                 }
             }
             return new Options(modelPath, prompt, systemPrompt, interactive, temperature, topp, seed, maxTokens, stream, echo,
-                    stateCacheFolder, stateCache);
+                    stateCacheFolder, stateCache, attentionTrace);
         }
     }
 
@@ -383,7 +392,7 @@ public abstract class Llama<S extends StateBase, W> {
             void accept(int idxToken, int layer, int head, FloatTensor att, int attOffset, int attLength);
         }
         
-        record AttentionDetail(int idxToken, int layer, int head, int idx, float attValue) { };
+        record AttentionDetail(int idxToken, int layer, int head, int idx, float attValue) { }
 
         State(Configuration config, int batchsize) {
             super(config, batchsize);
@@ -399,6 +408,8 @@ public abstract class Llama<S extends StateBase, W> {
             this.att = allocate(batchsize, config.numberOfHeads, config.contextLength);
         }
     }
+    
+    record TokenDetails(int token, boolean isInferred, float logprob, byte[] bytes, List<AttentionDetail> attentionDetails) { }
 
     /**
      * LLM generation entry point, ingest prompt tokens and generates new tokens.
@@ -418,18 +429,28 @@ public abstract class Llama<S extends StateBase, W> {
      * @param echo             debugging flag, prints ALL, prompt and inferred tokens, to {@link System#err stderr}
      * @param stateCachePath   optional path of state-cache to read a key-value-cache
      * @param onTokenGenerated callback, if non-null, it's called every time a token is inferred e.g. it's not called when ingesting prompt tokens
-     * @param attentionConsumer optional consumer to trace attentions
+     * @param attentionLimit maximum number of attention-details to be traced per token
      * @return list of generated/inferred tokens, including the stop token, if any e.g. does not include any token from the prompt
      */
-    public static <S extends StateBase, W> List<Integer> generateTokens(Llama<S, W> model, S state, int startPosition,
+    public static <S extends StateBase, W> List<TokenDetails> generateTokens(Llama<S, W> model, S state, int startPosition,
             List<Integer> promptTokens, Set<Integer> stopTokens, int maxTokens, Sampler sampler,
-            Path stateCachePath, boolean echo, IntConsumer onTokenGenerated, AttentionConsumer attentionConsumer) {
+            Path stateCachePath, boolean echo, Consumer<TokenDetails> onTokenGenerated, int attentionLimit) {
         long startNanos = System.nanoTime();
         long startGen = 0;
         if (maxTokens < 0 || model.configuration().contextLength < maxTokens) {
             maxTokens = model.configuration().contextLength;
         }
         
+        final ConcurrentMap<Integer, List<AttentionDetail>> mapAttIdcs = new ConcurrentHashMap<>();
+        final AttentionConsumer attentionConsumer = (position, layer, head, att, offset, length) -> {
+            List<AttentionDetail> attDetails = mapAttIdcs.computeIfAbsent(position, p -> Collections.synchronizedList(new ArrayList<>()));
+            IntStream.range(0, length).mapToObj(idx -> new AttentionDetail(position, layer, head, idx, att.getFloat(offset + idx)))
+                .filter(det -> det.idxToken() != det.idx())
+                .filter(det -> det.idx() > 0)
+                .sorted(Comparator.comparing(AttentionDetail::attValue).reversed().thenComparing(AttentionDetail::layer))
+                .limit(attentionLimit).forEach(attDetails::add);
+        };
+
         int startPositionGen = startPosition;
         if (startPositionGen == 0 && stateCachePath != null) {
             try (FileInputStream fis = new FileInputStream(stateCachePath.toFile());
@@ -443,12 +464,13 @@ public abstract class Llama<S extends StateBase, W> {
             
         }
 
-        List<Integer> generatedTokens = new ArrayList<>(maxTokens);
+        List<TokenDetails> generatedTokens = new ArrayList<>(maxTokens);
         int token = state.latestToken; // BOS?
         int nextToken;
         int promptIndex = 0;
         for (int position = startPosition; position < maxTokens; ++position) {
-            if (promptIndex < promptTokens.size()) {
+            final boolean isPrompt = promptIndex < promptTokens.size();
+            if (isPrompt) {
                 final int nTokens = Math.min(promptTokens.size() - promptIndex, state.batchsize);
                 final int[] tokens = new int[nTokens];
                 for (int i = 0; i < nTokens; i++) {
@@ -480,9 +502,14 @@ public abstract class Llama<S extends StateBase, W> {
                 // log inferred token
                 System.err.print(Tokenizer.replaceControlCharacters(model.tokenizer().decode(List.of(nextToken))));
             }
-            generatedTokens.add(nextToken);
+            // The UTF-8-buffer might shift the UTF-8-bytes between tokens.
+            byte[] bufToken = model.tokenizer().decode(List.of(nextToken)).getBytes(StandardCharsets.UTF_8);
+            final TokenDetails tokenDetail = new TokenDetails(nextToken, !isPrompt,
+                    isPrompt ? 0.0f : state.logits.getFloat(nextToken), bufToken, mapAttIdcs.get(position));
+            generatedTokens.add(tokenDetail);
+                    
             if (onTokenGenerated != null) {
-                onTokenGenerated.accept(nextToken);
+                onTokenGenerated.accept(tokenDetail);
             }
             if (stopTokens.contains(nextToken)) {
                 break;
@@ -2141,6 +2168,12 @@ abstract class ChatFormat {
         tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
         tokens.add(endOfTurn);
         return tokens;
+    }
+
+    public List<TokenDetails> toTokenDetails(List<Integer> tokens) {
+        return tokens.stream().map(token -> new TokenDetails(token, false,
+                0.0f, tokenizer.decode(List.of(token)).getBytes(StandardCharsets.UTF_8),
+                null)).toList();
     }
 
     public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog) {

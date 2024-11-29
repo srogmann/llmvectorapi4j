@@ -12,6 +12,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,14 +28,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.rogmann.llmva4j.Llama.Options;
-import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
 import org.rogmann.llmva4j.Llama.StateBase;
+import org.rogmann.llmva4j.Llama.TokenDetails;
 
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
 class LlamaHttpServer {
-    record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler, Options options, S state, List<Integer> conversationTokens) { ; }
+    record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler, Options options, S state, List<TokenDetails> conversationTokens) { ; }
 
     static enum JsonFormat {
         LLAMA_CPP,
@@ -221,17 +222,18 @@ class LlamaHttpServer {
                         boolean stream = readBoolean(mapRequest, "stream", optionsGlobal.stream());
                         Options optionsReq = new Options(optionsGlobal.modelPath(), "", optionsGlobal.systemPrompt(), true,
                                 temperature, topP, seed, maxComplTokens, stream,
-                                optionsGlobal.echo(), optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache());
+                                optionsGlobal.echo(), optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(),
+                                optionsGlobal.attentionTrace());
                         System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
                                 temperature, topP, maxComplTokens, seed);
-                        final List<Integer> conversationTokens = new ArrayList<>();
+                        final List<TokenDetails> conversationTokens = new ArrayList<>();
                         httpSession = new LlamaHttpSession<>(sessionKey, model, sampler, optionsReq, state, conversationTokens);
                         mapSessions.put(sessionKey, httpSession);
                     }
                 }
                 final String sessionKey = httpSession.sessionKey();
                 final Options options = httpSession.options();
-                final List<Integer> conversationTokens = httpSession.conversationTokens();
+                final List<TokenDetails> conversationTokens = httpSession.conversationTokens();
                 int startPosition = conversationTokens.size();
                 
                 String systemMessage = null;
@@ -248,13 +250,14 @@ class LlamaHttpServer {
                 final long tsCreation = System.currentTimeMillis();
                 Integer stopToken = null;
                 String responseText = "";
+                List<TokenDetails> tokenDetails = new ArrayList<>();
                 if (systemMessage != null) {
                     responseText = "#SYSTEM: " + systemMessage;
                 } else {
                     ChatFormat chatFormat = model.chatFormat();
                     chatMessages.stream().map(m -> String.format("[%s]> %s", m.role(), m.content())).forEach(System.out::println);
-                    chatMessages.stream().map(chatFormat::encodeMessage).forEach(conversationTokens::addAll);
-                    conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+                    chatMessages.stream().map(chatFormat::encodeMessage).map(chatFormat::toTokenDetails).forEach(conversationTokens::addAll);
+                    conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""))));
                     //System.out.format("Tokens (start-pos %d): %s%n", startPosition, conversationTokens);
                     //System.out.println("Text: " + model.tokenizer().decode(conversationTokens).replace("\n", "\\n"));
                     Set<Integer> stopTokens = chatFormat.getStopTokens();
@@ -267,17 +270,17 @@ class LlamaHttpServer {
                     }
     
                     final Integer iStopToken = stopToken;
-                    AttentionConsumer attentionConsumer = null;;
-                    List<Integer> responseTokens = Llama.generateTokens(model, httpSession.state(), startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler,
-                            options.stateCache(), options.echo(), token -> {
+                    final List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
+                    List<TokenDetails> responseTokens = Llama.generateTokens(model, httpSession.state(), startPosition, promptTokens, stopTokens, options.maxTokens(), sampler,
+                            options.stateCache(), options.echo(), tokenDetail -> {
                         if (options.stream()) {
-                            if (!model.tokenizer().isSpecialToken(token)) {
-                                String sToken = model.tokenizer().decode(List.of(token));
+                            if (!model.tokenizer().isSpecialToken(tokenDetail.token())) {
+                                String sToken = model.tokenizer().decode(List.of(tokenDetail.token()));
                                 System.out.print(sToken);
-    
+
                                 Map<String, Object> mapResponse = createResponse(model, reqCounter, format, tsCreation,
-                                        iStopToken, true, sToken);
-    
+                                        iStopToken, true, sToken, List.of(tokenDetail));
+
                                 var sbOut = new StringBuilder();
                                 dumpJson(sbOut, mapResponse);
                                 byte[] buf = String.format("data: %s\n\n", sbOut).getBytes(StandardCharsets.UTF_8);
@@ -291,21 +294,22 @@ class LlamaHttpServer {
                                 }
                             }
                         }
-                    }, attentionConsumer);
+                    }, options.attentionTrace());
                     // Include stop token in the prompt history, but not in the response displayed to the user.
                     conversationTokens.addAll(responseTokens);
                     startPosition = conversationTokens.size();
-                    if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
-                        stopToken = responseTokens.getLast();
+                    if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
+                        stopToken = responseTokens.getLast().token();
                         responseTokens.removeLast();
                     }
                     if (!options.stream()) {
-                        responseText = model.tokenizer().decode(responseTokens);
+                        responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
+                        tokenDetails.addAll(responseTokens);
                         System.out.println(responseText);
                     }
                 }
                 Map<String, Object> mapResponse = createResponse(model, reqCounter, format, tsCreation,
-                        stopToken, options.stream(), responseText);
+                        stopToken, options.stream(), responseText, tokenDetails);
                 if (stopToken == null) {
                     System.err.println("Ran out of context length...");
                 }
@@ -348,7 +352,7 @@ class LlamaHttpServer {
 
     private static <S extends StateBase, W> Map<String, Object> createResponse(Llama<S, W> model, final AtomicLong reqCounter,
             JsonFormat format, final long tsCreation, Integer stopToken,
-            boolean isDelta, String responseText) {
+            boolean isDelta, String responseText, List<TokenDetails> tokenDetails) {
         Map<String, Object> mapResponse = new LinkedHashMap<>();
         switch (format) {
         case LLAMA_CPP:
@@ -357,7 +361,7 @@ class LlamaHttpServer {
             break;
         case OPENAI:
             createResponseOpenAI(model, reqCounter, tsCreation, stopToken,
-                    mapResponse, isDelta, responseText);
+                    mapResponse, isDelta, responseText, tokenDetails);
             break;
         default:
             throw new IllegalArgumentException("format " + format);
@@ -367,7 +371,7 @@ class LlamaHttpServer {
 
     private static <S extends StateBase, W> void createResponseOpenAI(Llama<S, W> model, final AtomicLong reqCounter,
             final long tsCreation, Integer stopToken,
-            Map<String, Object> mapResponse, boolean isDelta, String content) {
+            Map<String, Object> mapResponse, boolean isDelta, String content, List<TokenDetails> tokenDetails) {
         mapResponse.put("id", "cc-" + reqCounter.incrementAndGet());
         mapResponse.put("object", "chat.completion");
         mapResponse.put("created", Long.toString(tsCreation / 1000L));
@@ -379,7 +383,20 @@ class LlamaHttpServer {
         respMsg.put("role", "assistant");
         respMsg.put("content", content);
         choice0.put(isDelta ? "delta" : "message", respMsg);
-        choice0.put("logprobs", null);
+        Map<String, Object> logprobs = new LinkedHashMap<>();
+        List<Object> logprobscontent = new ArrayList<>();
+        if (tokenDetails != null) {
+            tokenDetails.forEach(detail -> {
+                Map<String, Object> msgContTokn = new LinkedHashMap<>();
+                msgContTokn.put("token", Integer.toString(detail.token()));
+                msgContTokn.put("logprob", detail.logprob());
+                msgContTokn.put("bytes", detail.bytes());
+                msgContTokn.put("top_logprobe", new ArrayList<>());
+                logprobscontent.add(msgContTokn);
+            });
+        }
+        logprobs.put("content", logprobscontent);
+        choice0.put("logprobs", logprobs);
         String finishReason = null;
         if (!isDelta) {
             finishReason = (stopToken == null) ? "length" : "stop";
@@ -413,6 +430,18 @@ class LlamaHttpServer {
             else if (value instanceof Boolean b) {
                 sb.append(b);
             }
+            else if (value instanceof Integer i) {
+                sb.append(i);
+            }
+            else if (value instanceof Float f) {
+                sb.append(f);
+            }
+            else if (value instanceof BigDecimal bd) {
+                sb.append(bd);
+            }
+            else if (value instanceof byte[] buf) {
+                sb.append(Arrays.toString(buf));
+            }
             else {
                 throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
             }
@@ -441,6 +470,15 @@ class LlamaHttpServer {
             }
             else if (value instanceof Boolean b) {
                 sb.append(b);
+            }
+            else if (value instanceof Integer i) {
+                sb.append(i);
+            }
+            else if (value instanceof Float f) {
+                sb.append(f);
+            }
+            else if (value instanceof BigDecimal bd) {
+                sb.append(bd);
             }
             else {
                 throw new IllegalArgumentException("Unexpected value of type " + value.getClass());

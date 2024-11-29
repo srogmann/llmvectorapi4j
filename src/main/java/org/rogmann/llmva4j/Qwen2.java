@@ -24,15 +24,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -41,6 +37,7 @@ import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.StateBase;
+import org.rogmann.llmva4j.Llama.TokenDetails;
 import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
 import org.rogmann.llmva4j.Llama.State.AttentionDetail;
 import org.rogmann.llmva4j.Qwen2Llama.State;
@@ -54,20 +51,10 @@ public class Qwen2 {
     static void runInteractive(Qwen2Llama model, Sampler sampler, Options options) {
         State state = null;
         ChatFormat chatFormat = model.chatFormat();
-        List<Integer> conversationTokens = new ArrayList<>();
+        List<TokenDetails> conversationTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
-            conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
+            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt()))));
         }
-        int attLimit = 3;
-        final ConcurrentMap<Integer, List<AttentionDetail>> mapAttIdcs = new ConcurrentHashMap<>();
-        AttentionConsumer ac = (position, layer, head, att, offset, length) -> {
-            List<AttentionDetail> attDetails = mapAttIdcs.computeIfAbsent(position, p -> Collections.synchronizedList(new ArrayList<>()));
-            IntStream.range(0, length).mapToObj(idx -> new AttentionDetail(position, layer, head, idx, att.getFloat(offset + idx)))
-                .filter(det -> det.idxToken() != det.idx())
-                .filter(det -> det.idx() > 0)
-                .sorted(Comparator.comparing(AttentionDetail::attValue).reversed().thenComparing(AttentionDetail::layer))
-                .limit(attLimit).forEach(attDetails::add);
-        };
 
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
@@ -93,28 +80,30 @@ public class Qwen2 {
                     }
                     continue;
                 }
-                conversationTokens.addAll(chatFormat.encodeMessage(new Message(Role.USER, userText)));
-                conversationTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
+                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new Message(Role.USER, userText))));
+                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new Message(Role.ASSISTANT, ""))));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
-                List<Integer> responseTokens = Llama.generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler,
-                        options.stateCache(), options.echo(), token -> {
+                List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
+                List<TokenDetails> responseTokens = Llama.generateTokens(model, state, startPosition, promptTokens
+                        , stopTokens, options.maxTokens(), sampler,
+                        options.stateCache(), options.echo(), tokenDetail -> {
                     if (options.stream()) {
-                        int tokenType = model.tokenizer().getTokenType(token);
+                        int tokenType = model.tokenizer().getTokenType(tokenDetail.token());
                         if (tokenType == 1 || tokenType == 6) {
-                            System.out.print(model.tokenizer().decode(List.of(token)));
+                            System.out.print(model.tokenizer().decode(List.of(tokenDetail.token())));
                         }
                     }
-                }, ac);
+                }, options.attentionTrace());
                 // Include stop token in the prompt history, but not in the response displayed to the user.
                 conversationTokens.addAll(responseTokens);
                 startPosition = conversationTokens.size();
                 Integer stopToken = null;
-                if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
-                    stopToken = responseTokens.getLast();
+                if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
+                    stopToken = responseTokens.getLast().token();
                     responseTokens.removeLast();
                 }
                 if (!options.stream()) {
-                    String responseText = model.tokenizer().decode(responseTokens);
+                    String responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
                     System.out.println(responseText);
                 }
                 if (stopToken == null) {
@@ -133,7 +122,7 @@ public class Qwen2 {
                 IntFunction<String> token2Json = token -> JsonProcessing.escapeString(model.tokenizer().decode(List.of(token)));
                 bw.write('[');
                 for (int i = 0; i < conversationTokens.size(); i++) {
-                    List<AttentionDetail> attDetails = mapAttIdcs.get(i);
+                    List<AttentionDetail> attDetails = conversationTokens.get(i).attentionDetails();
                     if (attDetails == null) {
                         continue;
                     }
@@ -141,19 +130,19 @@ public class Qwen2 {
                         bw.write(',');
                     }
                     bw.write(String.format("{\"tokenText\": %s, \"attentions\": [",
-                            token2Json.apply(conversationTokens.get(i))));
+                            token2Json.apply(conversationTokens.get(i).token())));
                     List<AttentionDetail> top5 = attDetails.stream().sorted((v1, v2) -> (int) Math.signum(v2.attValue() - v1.attValue())).limit(5)
                         .collect(Collectors.toList());
                     
                     List<String> top5Display = top5.stream().map(det -> String.format("Att[l=%2d, h=%2d, posRef=%3d(%-10.10s), score=%.4f]",
                             det.layer(), det.head(), det.idx(),
-                            token2Json.apply(conversationTokens.get(det.idx())), det.attValue(), Locale.US))
+                            token2Json.apply(conversationTokens.get(det.idx()).token()), det.attValue(), Locale.US))
                         .collect(Collectors.toList());
                     System.out.format("  Position %d (%-10.10s): %s%n", i,
-                            token2Json.apply(conversationTokens.get(i)), top5Display);
+                            token2Json.apply(conversationTokens.get(i).token()), top5Display);
 
                     String top5Json = top5.stream().map(det -> String.format(Locale.US, "{\"reference-token\": %d, \"layer\": %d, \"head\": %d, \"score\": %f, \"token-text\": %s}",
-                            det.idx(), det.layer(), det.head(), det.attValue(), token2Json.apply(conversationTokens.get(det.idx())))) 
+                            det.idx(), det.layer(), det.head(), det.attValue(), token2Json.apply(conversationTokens.get(det.idx()).token()))) 
                         .collect(Collectors.joining(", "));
                     bw.write(top5Json);
                     bw.write("]}");
@@ -177,21 +166,20 @@ public class Qwen2 {
         promptTokens.addAll(chatFormat.encodeHeader(new Message(Role.ASSISTANT, "")));
 
         Set<Integer> stopTokens = chatFormat.getStopTokens();
-        AttentionConsumer attentionConsumer = null;
-        List<Integer> responseTokens = Llama.generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler,
-                options.stateCache(), options.echo(), token -> {
+        List<TokenDetails> responseTokens = Llama.generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler,
+                options.stateCache(), options.echo(), tokenDetail -> {
             if (options.stream()) {
-                int tokenType = model.tokenizer().getTokenType(token);
+                int tokenType = model.tokenizer().getTokenType(tokenDetail.token());
                 if (tokenType == 1 || tokenType == 6) {
-                    System.out.print(model.tokenizer().decode(List.of(token)));
+                    System.out.print(model.tokenizer().decode(List.of(tokenDetail.token())));
                 }
             }
-        }, attentionConsumer);
-        if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
+        }, options.attentionTrace());
+        if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
             responseTokens.removeLast();
         }
         if (!options.stream()) {
-            String responseText = model.tokenizer().decode(responseTokens);
+            String responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
             System.out.println(responseText);
         }
     }

@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.FloatBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
@@ -27,11 +28,11 @@ public class Llama3 extends Llama<State, Weights> {
 
     static void runInteractive(Llama3 model, Sampler sampler, Options options) {
         Llama.State state = null;
-        List<Integer> conversationTokens = new ArrayList<>();
+        List<TokenDetails> conversationTokens = new ArrayList<>();
         ChatFormat chatFormat = model.chatFormat();
-        conversationTokens.add(chatFormat.beginOfText);
+        conversationTokens.addAll(chatFormat.toTokenDetails(Collections.singletonList(chatFormat.beginOfText)));
         if (options.systemPrompt() != null) {
-            conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt())));
+            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt()))));
         }
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
@@ -62,28 +63,28 @@ public class Llama3 extends Llama<State, Weights> {
                 if (state == null) {
                     state = model.createNewState(Llama.BATCH_SIZE);
                 }
-                conversationTokens.addAll(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText)));
-                conversationTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText))));
+                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""))));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
-                AttentionConsumer attentionConsumer = null;
-                List<Integer> responseTokens = generateTokens(model, state, startPosition, conversationTokens.subList(startPosition, conversationTokens.size()), stopTokens, options.maxTokens(), sampler,
-                        options.stateCache(), options.echo(), token -> {
+                List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
+                List<TokenDetails> responseTokens = generateTokens(model, state, startPosition, promptTokens, stopTokens, options.maxTokens(), sampler,
+                        options.stateCache(), options.echo(), tokenDetail -> {
                     if (options.stream()) {
-                        if (!model.tokenizer().isSpecialToken(token)) {
-                            System.out.print(model.tokenizer().decode(List.of(token)));
+                        if (!model.tokenizer().isSpecialToken(tokenDetail.token())) {
+                            System.out.print(model.tokenizer().decode(List.of(tokenDetail.token())));
                         }
                     }
-                }, attentionConsumer);
+                }, options.attentionTrace());
                 // Include stop token in the prompt history, but not in the response displayed to the user.
                 conversationTokens.addAll(responseTokens);
                 startPosition = conversationTokens.size();
                 Integer stopToken = null;
-                if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
-                    stopToken = responseTokens.getLast();
+                if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
+                    stopToken = responseTokens.getLast().token();
                     responseTokens.removeLast();
                 }
                 if (!options.stream()) {
-                    String responseText = model.tokenizer().decode(responseTokens);
+                    String responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
                     System.out.println(responseText);
                 }
                 if (stopToken == null) {
@@ -259,20 +260,19 @@ public class Llama3 extends Llama<State, Weights> {
         promptTokens.addAll(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
 
         Set<Integer> stopTokens = chatFormat.getStopTokens();
-        AttentionConsumer attentionConsumer = null;
-        List<Integer> responseTokens = generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler,
+        List<TokenDetails> responseTokens = generateTokens(model, state, 0, promptTokens, stopTokens, options.maxTokens(), sampler,
                 options.stateCache(), options.echo(), token -> {
             if (options.stream()) {
-                if (!model.tokenizer().isSpecialToken(token)) {
-                    System.out.print(model.tokenizer().decode(List.of(token)));
+                if (!model.tokenizer().isSpecialToken(token.token())) {
+                    System.out.print(model.tokenizer().decode(List.of(token.token())));
                 }
             }
-        }, attentionConsumer);
-        if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast())) {
+        }, options.attentionTrace());
+        if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
             responseTokens.removeLast();
         }
         if (!options.stream()) {
-            String responseText = model.tokenizer().decode(responseTokens);
+            String responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
             System.out.println(responseText);
         }
     }
