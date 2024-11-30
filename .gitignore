@@ -1,5 +1,5 @@
-# Compiled class file
 *.class
+.temp-*.txt
 
 hs_err_pid*
 replay_pid*
