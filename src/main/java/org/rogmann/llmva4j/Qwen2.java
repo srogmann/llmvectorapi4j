@@ -14,32 +14,24 @@
 //
 package org.rogmann.llmva4j;
 
-import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
-import java.util.function.IntFunction;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
-import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
-import org.rogmann.llmva4j.Llama.State.AttentionDetail;
 import org.rogmann.llmva4j.Qwen2Llama.State;
 import org.rogmann.llmva4j.Qwen2Llama.Weights;
 
@@ -114,44 +106,7 @@ public class Qwen2 {
         }
         String attTraceFile = System.getProperty("llama.attentionTrace.file");
         if (attTraceFile != null) {
-            var file = new File(attTraceFile);
-            System.out.format("Top attentions (JSON-output in %s):%n", file);
-            try (OutputStream fos = new FileOutputStream(file);
-                 OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
-                 BufferedWriter bw = new BufferedWriter(osw)) {
-                IntFunction<String> token2Json = token -> JsonProcessing.escapeString(model.tokenizer().decode(List.of(token)));
-                bw.write('[');
-                for (int i = 0; i < conversationTokens.size(); i++) {
-                    List<AttentionDetail> attDetails = conversationTokens.get(i).attentionDetails();
-                    if (attDetails == null) {
-                        continue;
-                    }
-                    if (i > 0) {
-                        bw.write(',');
-                    }
-                    bw.write(String.format("{\"tokenText\": %s, \"attentions\": [",
-                            token2Json.apply(conversationTokens.get(i).token())));
-                    List<AttentionDetail> top5 = attDetails.stream().sorted((v1, v2) -> (int) Math.signum(v2.attValue() - v1.attValue())).limit(5)
-                        .collect(Collectors.toList());
-                    
-                    List<String> top5Display = top5.stream().map(det -> String.format("Att[l=%2d, h=%2d, posRef=%3d(%-10.10s), score=%.4f]",
-                            det.layer(), det.head(), det.idx(),
-                            token2Json.apply(conversationTokens.get(det.idx()).token()), det.attValue(), Locale.US))
-                        .collect(Collectors.toList());
-                    System.out.format("  Position %d (%-10.10s): %s%n", i,
-                            token2Json.apply(conversationTokens.get(i).token()), top5Display);
-
-                    String top5Json = top5.stream().map(det -> String.format(Locale.US, "{\"reference-token\": %d, \"layer\": %d, \"head\": %d, \"score\": %f, \"token-text\": %s}",
-                            det.idx(), det.layer(), det.head(), det.attValue(), token2Json.apply(conversationTokens.get(det.idx()).token()))) 
-                        .collect(Collectors.joining(", "));
-                    bw.write(top5Json);
-                    bw.write("]}");
-                    bw.write(System.lineSeparator());
-                }
-                bw.write(']');
-            } catch (IOException e) {
-                throw new RuntimeException("IO-error while writing " + file, e);
-            }
+            AttentionCollector.writeAttentionsIntoFile(new File(attTraceFile).toPath(), model, conversationTokens);
         }
     }
 

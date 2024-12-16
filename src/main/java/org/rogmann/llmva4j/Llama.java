@@ -58,8 +58,8 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
-import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
-import org.rogmann.llmva4j.Llama.State.AttentionDetail;
+import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
+import org.rogmann.llmva4j.AttentionCollector.AttentionDetail;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
 
@@ -374,26 +374,6 @@ public abstract class Llama<S extends StateBase, W> {
         public final FloatTensor[] v; // value (dim,)
         public final FloatTensor[] att; // buffer for scores/attention values (n_heads, seq_len)
 
-        /**
-         * Interface for classes that consume attention data.
-         */
-        public interface AttentionConsumer {
-
-            /**
-             * Accepts attention data.
-             *
-             * @param idxToken     index of the token
-             * @param layer        layer index
-             * @param head         attention-head
-             * @param att          attention-tensor
-             * @param attOffset    offset in the attention-tensor
-             * @param attLength    size of the current block in the attention-tensor
-             */
-            void accept(int idxToken, int layer, int head, FloatTensor att, int attOffset, int attLength);
-        }
-        
-        record AttentionDetail(int idxToken, int layer, int head, int idx, float attValue) { }
-
         State(Configuration config, int batchsize) {
             super(config, batchsize);
 
@@ -409,7 +389,7 @@ public abstract class Llama<S extends StateBase, W> {
         }
     }
     
-    record TokenDetails(int token, boolean isInferred, float logprob, byte[] bytes, List<AttentionDetail> attentionDetails) { }
+    record TokenDetails(int position, int token, boolean isInferred, float logprob, byte[] bytes, List<AttentionDetail> attentionDetails) { }
 
     /**
      * LLM generation entry point, ingest prompt tokens and generates new tokens.
@@ -445,8 +425,8 @@ public abstract class Llama<S extends StateBase, W> {
         final AttentionConsumer attentionConsumer = (position, layer, head, att, offset, length) -> {
             List<AttentionDetail> attDetails = mapAttIdcs.computeIfAbsent(position, p -> Collections.synchronizedList(new ArrayList<>()));
             IntStream.range(0, length).mapToObj(idx -> new AttentionDetail(position, layer, head, idx, att.getFloat(offset + idx)))
-                .filter(det -> det.idxToken() != det.idx())
-                .filter(det -> det.idx() > 0)
+                .filter(det -> det.position() != det.positionRef())
+                .filter(det -> det.positionRef() > 0)
                 .sorted(Comparator.comparing(AttentionDetail::attValue).reversed().thenComparing(AttentionDetail::layer))
                 .limit(attentionLimit).forEach(attDetails::add);
         };
@@ -469,6 +449,7 @@ public abstract class Llama<S extends StateBase, W> {
         int nextToken;
         int promptIndex = 0;
         for (int position = startPosition; position < maxTokens; ++position) {
+            int currPosition = position;
             final boolean isPrompt = promptIndex < promptTokens.size();
             if (isPrompt) {
                 final int nTokens = Math.min(promptTokens.size() - promptIndex, state.batchsize);
@@ -488,6 +469,15 @@ public abstract class Llama<S extends StateBase, W> {
                 // Only compute logits on the very last batch.
                 boolean computeLogits = promptIndex + nTokens >= promptTokens.size();
                 model.forward(state, tokens, position, computeLogits, attentionConsumer);
+                if (onTokenGenerated != null) {
+                    for (int i = 0; i < nTokens; i++) {
+                        int iToken = tokens[i];
+                        byte[] bufToken = model.tokenizer().decode(List.of(iToken)).getBytes(StandardCharsets.UTF_8);
+                        final TokenDetails tokenDetail = new TokenDetails(position + i, iToken, false,
+                                0.0f, bufToken, mapAttIdcs.get(position + i));
+                        onTokenGenerated.accept(tokenDetail);
+                    }
+                }
                 position += nTokens - 1; // -1 -> incremented later in the for loop
                 promptIndex += nTokens;
                 if (promptIndex < promptTokens.size()) {
@@ -504,7 +494,7 @@ public abstract class Llama<S extends StateBase, W> {
             }
             // The UTF-8-buffer might shift the UTF-8-bytes between tokens.
             byte[] bufToken = model.tokenizer().decode(List.of(nextToken)).getBytes(StandardCharsets.UTF_8);
-            final TokenDetails tokenDetail = new TokenDetails(nextToken, !isPrompt,
+            final TokenDetails tokenDetail = new TokenDetails(currPosition, nextToken, !isPrompt,
                     isPrompt ? 0.0f : state.logits.getFloat(nextToken), bufToken, mapAttIdcs.get(position));
             generatedTokens.add(tokenDetail);
                     
@@ -2171,9 +2161,14 @@ abstract class ChatFormat {
     }
 
     public List<TokenDetails> toTokenDetails(List<Integer> tokens) {
-        return tokens.stream().map(token -> new TokenDetails(token, false,
-                0.0f, tokenizer.decode(List.of(token)).getBytes(StandardCharsets.UTF_8),
-                null)).toList();
+        List<TokenDetails> tokenDetails = new ArrayList<>();
+        for (int i=0; i<tokens.size(); i++) {
+            int token = tokens.get(i);
+            tokenDetails.add(new TokenDetails(i, token, false,
+                    0.0f, tokenizer.decode(List.of(token)).getBytes(StandardCharsets.UTF_8),
+                    null));
+        }
+        return tokenDetails;
     }
 
     public List<Integer> encodeDialogPrompt(boolean appendAssistantTurn, List<ChatFormat.Message> dialog) {

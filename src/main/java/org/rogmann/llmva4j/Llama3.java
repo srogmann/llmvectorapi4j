@@ -10,9 +10,9 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 
+import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
 import org.rogmann.llmva4j.Llama.State;
 import org.rogmann.llmva4j.Llama.Weights;
-import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
 
 public class Llama3 extends Llama<State, Weights> {
 

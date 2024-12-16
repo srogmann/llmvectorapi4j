@@ -32,11 +32,11 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Configuration;
 import org.rogmann.llmva4j.Llama.Options;
-import org.rogmann.llmva4j.Llama.State.AttentionConsumer;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Phi3.Phi3Model.State;
 import org.rogmann.llmva4j.Phi3.Phi3Model.Weights;

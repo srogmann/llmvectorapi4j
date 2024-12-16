@@ -26,7 +26,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import org.rogmann.llmva4j.AttentionCollector.AttentionDetail;
 import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
@@ -211,7 +213,7 @@ class LlamaHttpServer {
                         // We build a new HTTP-session.
                         final S state = model.createNewState(Llama.BATCH_SIZE);
                         sessionKey = "SESS-" + reqCounter.get() + "-" + UUID.randomUUID().toString();
-                        exchange.getResponseHeaders().add("Set-Cookie", "LLAMA_SESS_ID=" + sessionKey);
+                        exchange.getResponseHeaders().add("Set-Cookie", "LLAMA_SESS_ID=" + sessionKey + "; SameSite=Strict");
 
                         float temperature = readFloat(mapRequest, "temperature", optionsGlobal.temperature());
                         float topP = readFloat(mapRequest, "top_p", optionsGlobal.topp());
@@ -325,6 +327,11 @@ class LlamaHttpServer {
                 }
                 exchange.getResponseBody().write(buf);
                 exchange.close();
+
+                String attTraceFile = System.getProperty("llama.attentionTrace.file");
+                if (attTraceFile != null) {
+                    AttentionCollector.writeAttentionsIntoFile(new File(attTraceFile).toPath(), model, conversationTokens);
+                }
             } catch (Exception e) {
                 System.err.println("Error while creating response: " + e.getMessage());
                 e.printStackTrace();
@@ -388,10 +395,24 @@ class LlamaHttpServer {
         if (tokenDetails != null) {
             tokenDetails.forEach(detail -> {
                 Map<String, Object> msgContTokn = new LinkedHashMap<>();
+                msgContTokn.put("position", detail.position());
                 msgContTokn.put("token", Integer.toString(detail.token()));
+                msgContTokn.put("tokenText", new String(detail.bytes(), StandardCharsets.UTF_8));
                 msgContTokn.put("logprob", detail.logprob());
                 msgContTokn.put("bytes", detail.bytes());
-                msgContTokn.put("top_logprobe", new ArrayList<>());
+                msgContTokn.put("top_logprobs", new ArrayList<>());
+                List<Object> listAtts = new ArrayList<>();
+                List<AttentionDetail> top5 = detail.attentionDetails().stream().sorted((v1, v2) -> (int) Math.signum(v2.attValue() - v1.attValue())).limit(5)
+                        .collect(Collectors.toList());
+                top5.forEach(attDet -> {
+                    Map<String, Object> mapAtt = new LinkedHashMap<>();
+                    mapAtt.put("position-ref", attDet.positionRef());
+                    mapAtt.put("layer", attDet.layer());
+                    mapAtt.put("head", attDet.head());
+                    mapAtt.put("score", attDet.attValue());
+                    listAtts.add(mapAtt);
+                });
+                msgContTokn.put("attentions", listAtts);
                 logprobscontent.add(msgContTokn);
             });
         }
