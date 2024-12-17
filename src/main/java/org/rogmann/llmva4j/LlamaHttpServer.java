@@ -213,7 +213,7 @@ class LlamaHttpServer {
                         // We build a new HTTP-session.
                         final S state = model.createNewState(Llama.BATCH_SIZE);
                         sessionKey = "SESS-" + reqCounter.get() + "-" + UUID.randomUUID().toString();
-                        exchange.getResponseHeaders().add("Set-Cookie", "LLAMA_SESS_ID=" + sessionKey + "; SameSite=Strict");
+                        exchange.getResponseHeaders().add("Set-Cookie", "LLAMA_SESS_ID=" + sessionKey + "; path=/; SameSite=Strict");
 
                         float temperature = readFloat(mapRequest, "temperature", optionsGlobal.temperature());
                         float topP = readFloat(mapRequest, "top_p", optionsGlobal.topp());
