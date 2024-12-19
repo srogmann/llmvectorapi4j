@@ -36,6 +36,10 @@ import org.rogmann.llmva4j.Llama.TokenDetails;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
+/**
+ * HTTP-server implementation to execute POST-requests (Llama.cpp-format or OpenAI-format).
+ * Optionally static HTML-pages of a GUI can be served.
+ */
 class LlamaHttpServer {
     record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler, Options options, S state, List<TokenDetails> conversationTokens) { ; }
 
@@ -112,11 +116,11 @@ class LlamaHttpServer {
                     BufferedReader br = new BufferedReader(isr);
                     TeeBufferedReader tbr = new TeeBufferedReader(br)) {
                 try {
-                    readChar(tbr, true, '{');
-                    mapRequest = parseJsonDict(tbr);
+                    LightweightJsonHandler.readChar(tbr, true, '{');
+                    mapRequest = LightweightJsonHandler.parseJsonDict(tbr);
 
-                    List<Map<String, Object>> messages = getJsonArrayDicts(mapRequest, "messages");
-                    String prompt = getJsonValue(mapRequest, "prompt", String.class);
+                    List<Map<String, Object>> messages = LightweightJsonHandler.getJsonArrayDicts(mapRequest, "messages");
+                    String prompt = LightweightJsonHandler.getJsonValue(mapRequest, "prompt", String.class);
                     if (prompt != null) {
                         // llama.cpp chat sends the whole chat as a long string :-/.
                         Pattern pLlamaCppChatDefault = Pattern.compile(".*\nUser: (.*)\nLlama:", Pattern.DOTALL);
@@ -129,8 +133,8 @@ class LlamaHttpServer {
                     String systemPrompt = optionsGlobal.systemPrompt();
                     if (messages != null) {
                         for (Map<String, Object> msg : messages) {
-                            String role = getJsonValue(msg, "role", String.class);
-                            String content = getJsonValue(msg, "content", String.class);
+                            String role = LightweightJsonHandler.getJsonValue(msg, "role", String.class);
+                            String content = LightweightJsonHandler.getJsonValue(msg, "content", String.class);
                             if (role == null) {
                                 throw new IllegalArgumentException("role is missing in incoming message.");
                             }
@@ -215,13 +219,13 @@ class LlamaHttpServer {
                         sessionKey = "SESS-" + reqCounter.get() + "-" + UUID.randomUUID().toString();
                         exchange.getResponseHeaders().add("Set-Cookie", "LLAMA_SESS_ID=" + sessionKey + "; path=/; SameSite=Strict");
 
-                        float temperature = readFloat(mapRequest, "temperature", optionsGlobal.temperature());
-                        float topP = readFloat(mapRequest, "top_p", optionsGlobal.topp());
-                        int maxLlamaCpp = readInt(mapRequest, "n_predict", optionsGlobal.maxTokens());
-                        int maxTokensOld = readInt(mapRequest, "max_tokens", maxLlamaCpp);
-                        int maxComplTokens = readInt(mapRequest, "max_completion_tokens", maxTokensOld);
-                        long seed = readLong(mapRequest, "seed", optionsGlobal.seed());
-                        boolean stream = readBoolean(mapRequest, "stream", optionsGlobal.stream());
+                        float temperature = LightweightJsonHandler.readFloat(mapRequest, "temperature", optionsGlobal.temperature());
+                        float topP = LightweightJsonHandler.readFloat(mapRequest, "top_p", optionsGlobal.topp());
+                        int maxLlamaCpp = LightweightJsonHandler.readInt(mapRequest, "n_predict", optionsGlobal.maxTokens());
+                        int maxTokensOld = LightweightJsonHandler.readInt(mapRequest, "max_tokens", maxLlamaCpp);
+                        int maxComplTokens = LightweightJsonHandler.readInt(mapRequest, "max_completion_tokens", maxTokensOld);
+                        long seed = LightweightJsonHandler.readLong(mapRequest, "seed", optionsGlobal.seed());
+                        boolean stream = LightweightJsonHandler.readBoolean(mapRequest, "stream", optionsGlobal.stream());
                         Options optionsReq = new Options(optionsGlobal.modelPath(), "", optionsGlobal.systemPrompt(), true,
                                 temperature, topP, seed, maxComplTokens, stream,
                                 optionsGlobal.echo(), optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(),
@@ -552,344 +556,6 @@ class LlamaHttpServer {
             }
             return c;
         }
-    }
-
-    private static List<Object> parseJsonArray(BufferedReader br) throws IOException {
-        // The '[' has been read already.
-        List<Object> list = new ArrayList<>();
-        boolean needComma = false;
-        while (true) {
-            char c = readChar(br, true);
-            if (c == ']') {
-                break;
-            }
-            if (needComma) {
-                if (c != ',') {
-                    throw new IllegalArgumentException(String.format("Missing comma but (%c), list: %s", c, list));
-                }
-                c = readChar(br, true);
-            }
-            Object value;
-            if (c == '"') {
-                value = readString(br);
-            }
-            else if (c == '{') {
-                value = parseJsonDict(br);
-            }
-            else if (c == '[') {
-                value = parseJsonArray(br);
-            }
-            else {
-                var sb = new StringBuilder();
-                while (true) {
-                    if (c == '}' || c == ',') {
-                        break;
-                    }
-                    if ((c >= 'a' && c <= 'z') || (c == 'E') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+') {
-                        sb.append(c);
-                        c = readChar(br, false);
-                    } else {
-                        throw new IllegalArgumentException("Illegal value character: " + c);
-                    }
-                }
-                if (sb.length() == 0) {
-                    throw new IllegalArgumentException("Missing value");
-                }
-                value = parseJsonValue(sb.toString());
-            }
-            list.add(value);
-            needComma = (c != ',');
-        }
-        return list;
-    }
-
-    /**
-     * This is a simple (not complete, but without dependency) JSON-parser used to parse llama.cpp-responses.
-     * Use a parser of https://json.org/ to get a complete implementation.
-     * @param br reader containing a JSON document
-     * @return map from key to value
-     * @throws IOException in case of an IO error
-     */
-    private static Map<String, Object> parseJsonDict(BufferedReader br) throws IOException {
-        // The '{' has been read already.
-        Map<String, Object> map = new LinkedHashMap<>();
-        boolean needComma = false;
-        while (true) {
-            char c;
-            try {
-                c = readChar(br, true);
-            } catch (IllegalArgumentException e) {
-                System.err.println("Map(part): " + map);
-                throw e;
-            }
-            if (c == '}') {
-                break;
-            }
-            if (needComma) {
-                if (c != ',') {
-                    throw new IllegalArgumentException("Missing comma: " + c);
-                }
-                c = readChar(br, true);
-            }
-            if (c != '"') {
-                throw new IllegalArgumentException("Illegal key: " + c);
-            }
-            String key = readString(br);
-            c = readChar(br, true);
-            if (c != ':') {
-                throw new IllegalArgumentException("Illegal character after key: " + c);
-            }
-            c = readChar(br, true);
-            Object value;
-            if (c == '"') {
-                value = readString(br);
-            }
-            else if (c == '{') {
-                value = parseJsonDict(br);
-            }
-            else if (c == '[') {
-                value = parseJsonArray(br);
-            }
-            else {
-                var sb = new StringBuilder();
-                while (true) {
-                    if (c == '}' || c == ',') {
-                        break;
-                    }
-                    if ((c >= 'a' && c <= 'z') || (c == 'E') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+') {
-                        sb.append(c);
-                        c = readChar(br, false);
-                    } else if ((c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
-                        break;
-                    } else {
-                        throw new IllegalArgumentException(String.format("Illegal value character (\\u%04x, '%c')", (int) c, c));
-                    }
-                }
-                if (sb.length() == 0) {
-                    throw new IllegalArgumentException("Missing value of key " + key);
-                }
-                value = parseJsonValue(sb.toString());
-                if (c == '}') {
-                    map.put(key, value);
-                    break;
-                }
-            }
-            map.put(key, value);
-            needComma = (c != ',');
-        }
-        return map;
-    }
-
-    private static Object parseJsonValue(String value) {
-        if ("null".equals(value)) {
-            return null;
-        }
-        if ("true".equals(value)) {
-            return Boolean.TRUE;
-        }
-        if ("false".equals(value)) {
-            return Boolean.FALSE;
-        }
-        // value has to be a JSON-number.
-        BigDecimal bd = new BigDecimal(value); // We accept some more values, e.g. "+5" instead of "5".
-        if (bd.scale() == 0 && BigDecimal.valueOf(Integer.MAX_VALUE).compareTo(bd) >= 0
-                && BigDecimal.valueOf(Integer.MIN_VALUE).compareTo(bd) <= 0) {
-            return Integer.valueOf(bd.intValueExact());
-        }
-        return bd;
-    }
-
-    /**
-     * Gets a JSON-value, if it exists.
-     * @param <V> type of the expected value
-     * @param map JSON-dictionary
-     * @param key key
-     * @param clazz class of the expected value
-     * @return value or <code>null</code>
-     */
-    @SuppressWarnings("unchecked")
-    static <V> V getJsonValue(Map<String, Object> map, String key, Class<V> clazz) {
-        Object o = map.get(key);
-        if (o == null) {
-            return null;
-        }
-        if (clazz.isInstance(o)) {
-            return (V) o;
-        }
-        throw new IllegalArgumentException(String.format("Unexpeted value-type (%s) of value (%s) at key (%s)", o.getClass(), o, key));
-    }
-
-    /**
-     * Gets a JSON-array, if it exists.
-     * @param map JSON-dictionary
-     * @param key key
-     * @return JSON-array or <code>null</code>
-     */
-    @SuppressWarnings("unchecked")
-    static List<Object> getJsonArray(Map<String, Object> map, String key) {
-        Object o = map.get(key);
-        if (o == null) {
-            return null;
-        }
-        if (!(o instanceof List)) {
-            throw new IllegalArgumentException(String.format("Unexpected value-type (%s) of value (%s) at key (%s), expected json-array", o.getClass(), o, key));
-        }
-        return (List<Object>) o;
-    }
-
-    /**
-     * Gets a JSON-array of dictionaries, if it exists.
-     * @param map JSON-dictionary
-     * @param key key
-     * @return JSON-array or <code>null</code>
-     */
-    @SuppressWarnings("unchecked")
-    static List<Map<String, Object>> getJsonArrayDicts(Map<String, Object> map, String key) {
-        List<Object> listObj = getJsonArray(map, key);
-        if (listObj == null) {
-            return null;
-        }
-        for (Object o : listObj) {
-            if (!(o instanceof Map)) {
-                throw new IllegalArgumentException(String.format("Unexpected value-type (%s) of value (%s) in list of key (%s), expected json-array with dictionaries", o.getClass(), o, key));
-            }
-        }
-        return (List<Map<String, Object>>) (Object) listObj;
-    }
-
-    private static String readString(BufferedReader br) throws IOException {
-        var sb = new StringBuilder();
-        while (true) {
-            char c = readChar(br, false);
-            if (c == '"') {
-                break;
-            }
-            if (c == '\\') {
-                c = readChar(br, false);
-                if (c == '"') {
-                    ;
-                }
-                else if (c == 't') {
-                    c = '\t';
-                }
-                else if (c == 'n') {
-                    c = '\n';
-                }
-                else if (c == 'r') {
-                    c = '\r';
-                }
-                else if (c == 'b') {
-                    c = '\b';
-                }
-                else if (c == 'f') {
-                    c = '\f';
-                }
-                else if (c == '/') {
-                    ;
-                }
-                else if (c == 'u') {
-                    char[] cBuf = new char[4];
-                    for (int i = 0; i < 4; i++) {
-                        cBuf[i] = readChar(br, false);
-                    }
-                    try {
-                        c = (char) Integer.parseInt(new String(cBuf), 16);
-                    } catch (NumberFormatException e) {
-                        throw new IllegalArgumentException("Unexpected unicode-escape: " + new String(cBuf));
-                    }
-                }
-                else {
-                    throw new IllegalArgumentException("Unexpected escape character: " + c);
-                }
-                sb.append(c);
-                continue;
-            }
-            sb.append(c);
-        }
-        return sb.toString();
-    }
-
-    private static char readChar(BufferedReader br, boolean ignoreWS) throws IOException {
-        while (true) {
-            int c = br.read();
-            if (c == -1) {
-                throw new IllegalArgumentException("Unexpected end of stream");
-            }
-            if (ignoreWS && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
-                continue;
-            }
-            return (char) c;
-        }
-    }
-
-    private static void readChar(BufferedReader br, boolean ignoreWS, char expected) throws IOException {
-        while (true) {
-            int c = br.read();
-            if (c == -1) {
-                throw new IllegalArgumentException(String.format("Unexpected end of stream, expected '%c', U+%04x", expected, (int) expected));
-            }
-            if (ignoreWS && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
-                continue;
-            }
-            if (c == expected) {
-                break;
-            }
-            throw new IllegalArgumentException(String.format("Unexpected character '%c' (0x%04x) instead of '%c'",
-                        c, c, expected));
-        }
-    }
-
-    private static float readFloat(Map<String, Object> map, String key, float defaultValue) {
-        Object oValue = map.get(key);
-        if (oValue == null) {
-            return defaultValue;
-        }
-        if (oValue instanceof Integer iValue) {
-            return iValue;
-        }
-        if (oValue instanceof BigDecimal bd) {
-            return bd.floatValue();
-        }
-        throw new IllegalStateException(String.format("Unexpected type (%s / %s) at key (%s), expected float", oValue.getClass(), oValue, key));
-    }
-
-    private static int readInt(Map<String, Object> map, String key, int defaultValue) {
-        Object oValue = map.get(key);
-        if (oValue == null) {
-            return defaultValue;
-        }
-        if (oValue instanceof Integer iValue) {
-            return iValue;
-        }
-        if (oValue instanceof BigDecimal bd) {
-            return bd.intValueExact();
-        }
-        throw new IllegalStateException(String.format("Unexpected type (%s / %s) at key (%s), expected int", oValue.getClass(), oValue, key));
-    }
-
-    private static long readLong(Map<String, Object> map, String key, long defaultValue) {
-        Object oValue = map.get(key);
-        if (oValue == null) {
-            return defaultValue;
-        }
-        if (oValue instanceof Integer iValue) {
-            return iValue;
-        }
-        if (oValue instanceof BigDecimal bd) {
-            return bd.longValueExact();
-        }
-        throw new IllegalStateException(String.format("Unexpected type (%s / %s) at key (%s), expected long", oValue.getClass(), oValue, key));
-    }
-
-    private static boolean readBoolean(Map<String, Object> map, String key, boolean defaultValue) {
-        Object oValue = map.get(key);
-        if (oValue == null) {
-            return defaultValue;
-        }
-        if (oValue instanceof Boolean bValue) {
-            return bValue;
-        }
-        throw new IllegalStateException(String.format("Unexpected type (%s / %s) at key (%s), expected boolean", oValue.getClass(), oValue, key));
     }
 
 }

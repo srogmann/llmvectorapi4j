@@ -54,7 +54,7 @@ public class AttentionCollector {
             try (OutputStream fos = new FileOutputStream(file);
                  OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
                  BufferedWriter bw = new BufferedWriter(osw)) {
-                IntFunction<String> token2Json = token -> JsonProcessing.escapeString(model.tokenizer().decode(List.of(token)));
+                IntFunction<String> token2Json = token -> LightweightJsonHandler.escapeString(model.tokenizer().decode(List.of(token)));
                 bw.write('[');
                 String fs = "";
                 for (int i = 0; i < conversationTokens.size(); i++) {

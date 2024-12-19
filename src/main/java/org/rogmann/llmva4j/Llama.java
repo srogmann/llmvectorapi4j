@@ -1289,40 +1289,6 @@ class Tokenizer {
     }
 }
 
-final class JsonProcessing {
-    public static String escapeString(String s) {
-        var sb = new StringBuilder(s.length() + 10);
-        dumpString(sb, s);
-        return sb.toString();
-    }
-    
-    private static void dumpString(StringBuilder sb, String s) {
-        sb.append('"');
-        for (int i = 0; i < s.length(); i++) {
-            final char c = s.charAt(i);
-            if (c == '"') {
-                sb.append("\\\"");
-            } else if ((c >= ' ' && c < 0x7f) || (c >= 0xa1 && c <= 0xff)) {
-                sb.append(c);
-            } else if (c == '\n') {
-                sb.append("\\n");
-            } else if (c == '\r') {
-                sb.append("\\r");
-            } else if (c == '\t') {
-                sb.append("\\t");
-            } else {
-                sb.append("\\u");
-                final String sHex = Integer.toHexString(c);
-                for (int j = sHex.length(); j < 4; j++) {
-                    sb.append('0');
-                }
-                sb.append(sHex);
-            }
-        }
-        sb.append('"');
-    }
-}
-
 final class Parallel {
     public static void parallelFor(int startInclusive, int endExclusive, IntConsumer action) {
         if (endExclusive - startInclusive == 1) {
