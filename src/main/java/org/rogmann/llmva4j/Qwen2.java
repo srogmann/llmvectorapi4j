@@ -476,7 +476,10 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
                 
                 // Optional analysis of the attention.
                 if (attentionConsumer != null) {
-                    attentionConsumer.accept(position + idxToken, curLayer, h, state.att[idxToken], attOffset, position + idxToken + 1);
+                    int vOffsetBase = (h / kvMul) * headSize;
+                    attentionConsumer.accept(position + idxToken, curLayer, h,
+                            state.att[idxToken], attOffset, position + idxToken + 1,
+                            state.valueCache[curLayer], vOffsetBase);
                 }
 
                 // weighted sum of the values, store back into xb

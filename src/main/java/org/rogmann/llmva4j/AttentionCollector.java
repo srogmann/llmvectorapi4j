@@ -31,8 +31,11 @@ public class AttentionCollector {
          * @param att          attention-tensor
          * @param attOffset    offset in the attention-tensor
          * @param attLength    size of the current block in the attention-tensor
+         * @param value        value-tensor
+         * @param voffsetBase  base offset in value tensor of current head, add position * kvDim
          */
-        void accept(int idxToken, int layer, int head, FloatTensor att, int attOffset, int attLength);
+        void accept(int idxToken, int layer, int head, FloatTensor att, int attOffset, int attLength,
+                FloatTensor value, int voffset);
     }
 
     /**
@@ -43,8 +46,9 @@ public class AttentionCollector {
      * @param head head number within the layer
      * @param positionRef position of the referenced token in the conversation
      * @param attValue value of the attention, indicating the strength of the interaction
+     * @param length of this attention's part of the value
      */
-    record AttentionDetail(int position, int layer, int head, int positionRef, float attValue) { }
+    record AttentionDetail(int position, int layer, int head, int positionRef, float attValue, float partValueLen) { }
 
     public static <S extends StateBase, W> void writeAttentionsIntoFile(Path attTracePath, Llama<S, W> model,
             List<TokenDetails> conversationTokens) {

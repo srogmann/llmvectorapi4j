@@ -405,20 +405,24 @@ class LlamaHttpServer {
                 msgContTokn.put("logprob", detail.logprob());
                 msgContTokn.put("bytes", detail.bytes());
                 msgContTokn.put("top_logprobs", new ArrayList<>());
-                List<Object> listAtts = new ArrayList<>();
-                List<AttentionDetail> top5 = detail.attentionDetails().stream().sorted((v1, v2) -> (int) Math.signum(v2.attValue() - v1.attValue())).limit(5)
-                        .collect(Collectors.toList());
-                top5.forEach(attDet -> {
-                    Map<String, Object> mapAtt = new LinkedHashMap<>();
-                    mapAtt.put("position-ref", attDet.positionRef());
-                    mapAtt.put("layer", attDet.layer());
-                    mapAtt.put("head", attDet.head());
-                    mapAtt.put("score", attDet.attValue());
-                    listAtts.add(mapAtt);
-                });
-                msgContTokn.put("attentions", listAtts);
+                if (detail.attentionDetails() != null && !detail.attentionDetails().isEmpty()) {
+                    List<Object> listAtts = new ArrayList<>();
+                    // Top 5 detail-entries sorted by length of partial value-vector.
+                    List<AttentionDetail> top5 = detail.attentionDetails().stream().sorted((v1, v2) -> (int) Math.signum(v2.partValueLen() - v1.partValueLen())).limit(5)
+                            .collect(Collectors.toList());
+                    top5.forEach(attDet -> {
+                        Map<String, Object> mapAtt = new LinkedHashMap<>();
+                        mapAtt.put("position-ref", attDet.positionRef());
+                        mapAtt.put("layer", attDet.layer());
+                        mapAtt.put("head", attDet.head());
+                        mapAtt.put("score", attDet.attValue());
+                        mapAtt.put("valueLength", attDet.partValueLen());
+                        listAtts.add(mapAtt);
+                    });
+                    msgContTokn.put("attentions", listAtts);
+                }
                 logprobscontent.add(msgContTokn);
-            });
+            }); 
         }
         logprobs.put("content", logprobscontent);
         choice0.put("logprobs", logprobs);

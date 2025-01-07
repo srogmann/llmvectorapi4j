@@ -422,12 +422,25 @@ public abstract class Llama<S extends StateBase, W> {
         }
         
         final ConcurrentMap<Integer, List<AttentionDetail>> mapAttIdcs = new ConcurrentHashMap<>();
-        final AttentionConsumer attentionConsumer = (position, layer, head, att, offset, length) -> {
+        //final ConcurrentMap<Integer, List<ValueDetail>> mapalueIdcs = new ConcurrentHashMap<>();
+        Configuration config = model.configuration();
+        final int headSize = config.headSize;
+        final int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
+        final AttentionConsumer attentionConsumer = (position, layer, head, att, offset, length, value, voffsetBase) -> {
             List<AttentionDetail> attDetails = mapAttIdcs.computeIfAbsent(position, p -> Collections.synchronizedList(new ArrayList<>()));
-            IntStream.range(0, length).mapToObj(idx -> new AttentionDetail(position, layer, head, idx, att.getFloat(offset + idx)))
-                .filter(det -> det.position() != det.positionRef())
+            IntStream.range(0, length).mapToObj(idx -> {
+                    float a = att.getFloat(offset + idx);
+                    float partValueLen = 0;
+                    for (int t = 0; t < headSize; t++) {
+                        float v = value.getFloat(voffsetBase + t * kvDim);
+                        partValueLen += v * v;
+                    }
+                    partValueLen = (float) (Math.abs(a) * Math.sqrt(partValueLen));
+                    return new AttentionDetail(position, layer, head, idx,  a, partValueLen);
+                })
+                .filter(det -> det.positionRef() < det.position())
                 .filter(det -> det.positionRef() > 0)
-                .sorted(Comparator.comparing(AttentionDetail::attValue).reversed().thenComparing(AttentionDetail::layer))
+                .sorted(Comparator.comparing(AttentionDetail::partValueLen).reversed().thenComparing(AttentionDetail::layer))
                 .limit(attentionLimit).forEach(attDetails::add);
         };
 

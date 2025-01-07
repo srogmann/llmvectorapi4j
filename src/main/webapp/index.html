@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Attention Analysis</title>
+    <style>
+        /* Default light mode styles */
+        body {
+            background-color: #fff;
+            color: #333;
+            font-family: Arial, sans-serif;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        #token-container {
+            white-space: pre-wrap; /* Preserves whitespace and allows wrapping */
+            position: relative;
+        }
+
+        .token {
+            display: inline-block;
+            padding: 2px;
+            border: 1px solid transparent;
+            margin: 1px;
+            cursor: pointer;
+            transition: background-color 0.3s ease; /* Smooth transition for background color */
+        }
+
+        .token:hover {
+            background-color: #ddf; /* Change background color on hover */
+        }
+
+        #info-field {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            width: 100%;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+
+        #arrow-svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Allow interaction with tokens below */
+        }
+
+        #file-input {
+            margin-top: 10px;
+        }
+
+        #prompt-area {
+            margin-top: 10px;
+        }
+
+        #send-button {
+            margin-top: 5px;
+        }
+
+        #reset-button {
+            margin-top: 5px;
+        }
+
+        /* Dark mode styles */
+        @media (prefers-color-scheme: dark) {
+            body {
+                background-color: #121212;
+                color: #e0e0e0;
+            }
+
+            .token {
+                color: #e0e0e0;
+            }
+
+            .token:hover {
+                background-color: #444; /* Change background color on hover */
+            }
+
+            #info-field {
+                border-color: #555;
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+            }
+
+            #arrow-svg marker {
+                stroke: #e0e0e0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>LLM Attention Analysis</h1>
+    <input type="file" id="file-input" accept=".json">
+    <div id="prompt-area">
+        <textarea id="prompt" rows="3" placeholder="Enter your prompt here..."></textarea>
+        <br>
+        <button id="send-button">Send</button>
+        <button id="reset-button">Reset Chat</button>
+    </div>
+    <div id="token-container"></div>
+    <svg id="arrow-svg"></svg>
+    <textarea id="info-field" rows="3" readonly></textarea>
+
+    <script>
+        // Array to store token information
+        const tokenInfo = [];
+        let isStreaming = false;
+
+        // Function to render tokens
+        function renderTokens(tokens, clearContainer = false) {
+            const container = document.getElementById('token-container');
+            if (clearContainer) {
+                container.innerHTML = ''; // Clear previous content
+                tokenInfo.length = 0; // Clear previous token info
+            }
+
+            tokens.forEach((tokenData, index) => {
+                const tokenElement = document.createElement('span');
+                tokenElement.className = 'token';
+                tokenElement.textContent = tokenData.tokenText;
+                tokenElement.id = `token-${tokenData.position}`;
+                //console.log("renderTokens, pos ", tokenData.position, ", el.id ", tokenElement.id);
+
+                container.appendChild(tokenElement);
+                if (tokenData.tokenText.includes('\n\n')) {
+                    // Create a double new line break element before the next part
+                    container.appendChild(document.createElement('br'));
+                    container.appendChild(document.createElement('br'));
+                    tokenElement.textContent = tokenElement.textContent.slice(0, -2);
+                }
+                else if (tokenData.tokenText.includes('\n')) {
+                    // Create a new line break element before the next part
+                    container.appendChild(document.createElement('br'));
+                    tokenElement.textContent = tokenElement.textContent.slice(0, -1);
+                }
+
+                // Get the position and size of the token
+                const rect = tokenElement.getBoundingClientRect();
+                tokenInfo.push({
+                    id: tokenElement.id,
+                    position: tokenData.position,
+                    token: tokenData.tokenText,
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                    attentions: tokenData.attentions
+                });
+
+                // Add hover event listener
+                tokenElement.addEventListener('mouseenter', () => {
+                    clearArrows();
+                    const info = tokenInfo.find(info => info.id === tokenElement.id);
+                    if (info) {
+                        document.getElementById('info-field').value = `Token-Position: ${info.position}, Token: ${info.token}\nUI-Position: (${info.left.toFixed(2)}, ${info.top.toFixed(2)})\nSize: (${info.width.toFixed(2)}x${info.height.toFixed(2)})\nAttentions: ${JSON.stringify(info.attentions, null, 2)}`;
+                        drawArrowsForToken(info);
+                    }
+                });
+
+                tokenElement.addEventListener('mouseleave', () => {
+                    // document.getElementById('info-field').value = '';
+                    //clearArrows(); // Clear arrows when not hovering
+                });
+            });
+
+            //console.log(tokenInfo); // Log token information to console
+        }
+
+        // Function to draw a bent arrow from one token to another
+        function drawBentArrow(fromTokenId, toTokenId, color) {
+            const fromToken = document.getElementById(fromTokenId);
+            const toToken = document.getElementById(toTokenId);
+
+            if (!fromToken || !toToken) return;
+
+            const scrollX = window.scrollX || window.pageXOffset;
+            const scrollY = window.scrollY || window.pageYOffset;
+
+            const fromRect = fromToken.getBoundingClientRect();
+            const toRect = toToken.getBoundingClientRect();
+
+            const fromCenter = {
+                x: fromRect.left + fromRect.width / 2 + scrollX,
+                y: fromRect.top + fromRect.height / 2 + scrollY
+            };
+
+            const toCenter = {
+                x: toRect.left + toRect.width / 2 + scrollX,
+                y: toRect.top + toRect.height / 2 + scrollY
+            };
+
+            const dx = toCenter.x - fromCenter.x;
+            const dy = toCenter.y - fromCenter.y;
+
+            const controlPoint1 = {
+                x: fromCenter.x + dx / 2,
+                y: fromCenter.y - 50 // Adjust the control point for bending
+            };
+
+            const controlPoint2 = {
+                x: fromCenter.x + dx / 2,
+                y: toCenter.y + 50 // Adjust the control point for bending
+            };
+
+            const pathData = `M ${fromCenter.x} ${fromCenter.y} C ${controlPoint1.x} ${controlPoint1.y}, ${controlPoint2.x} ${controlPoint2.y}, ${toCenter.x} ${toCenter.y}`;
+
+            const arrowElement = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            arrowElement.setAttribute('d', pathData);
+            arrowElement.setAttribute('stroke', color);
+            arrowElement.setAttribute('class', 'main');
+            arrowElement.setAttribute('stroke-width', '2');
+            arrowElement.setAttribute('fill', 'none');
+            arrowElement.setAttribute('marker-end', 'url(#arrowhead)');
+
+            const svg = document.getElementById('arrow-svg');
+            svg.appendChild(arrowElement);
+        }
+
+        // Function to draw arrows for a specific token info (details).
+        function drawArrowsForToken(token) {
+            createSvgDefs();
+
+            const position = token.position;
+            if (token.attentions) {
+                for (let i = token.attentions.length - 1; i >= 0; i--) {
+                    const attention = token.attentions[i];
+                    const positionRef = attention['position-ref'];
+                    //console.log("dAFT, p ", position, ", pR ", positionRef, ", tI.length", tokenInfo.length);
+                    if (positionRef >= 0 && positionRef < tokenInfo.length) {
+                        //console.log(`drawBent: position=${position}, positionRef: ${positionRef}`);
+                        drawBentArrow(`token-${position}`, `token-${positionRef}`, i == 0 ? 'blue' : 'grey');
+                    }
+                }
+            }
+        }
+
+        // Function to clear all arrows
+        function clearArrows() {
+            const svg = document.getElementById('arrow-svg');
+            svg.innerHTML = '';
+        }
+
+        function createSvgDefs() {
+            // Define arrowhead marker
+            const svg = document.getElementById('arrow-svg');
+            const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+            const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+            marker.setAttribute('id', 'arrowhead');
+            marker.setAttribute('markerWidth', '10');
+            marker.setAttribute('markerHeight', '7');
+            marker.setAttribute('refX', '10');
+            marker.setAttribute('refY', '3.5');
+            marker.setAttribute('orient', 'auto');
+
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', 'M 0 0 L 10 3.5 L 0 7 Z');
+            path.setAttribute('fill', 'black');
+
+            marker.appendChild(path);
+            defs.appendChild(marker);
+            svg.appendChild(defs);
+        }
+
+        // Function to handle file upload
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = JSON.parse(e.target.result);
+                        if (Array.isArray(data)) {
+                            renderTokens(data, true);
+                            isStreaming = false; // Reset streaming flag
+                        } else {
+                            alert('Invalid JSON format. Expected an array of tokens.');
+                        }
+                    } catch (error) {
+                        console.error('Error parsing JSON data:', error);
+                        alert('Error parsing JSON file.');
+                    }
+                };
+                reader.readAsText(file);
+            }
+        }
+
+        // Function to handle sending prompt
+        function sendPrompt() {
+            const prompt = document.getElementById('prompt').value;
+            if (!prompt) {
+                alert('Please enter a prompt.');
+                return;
+            }
+
+            const data = {
+                messages: [
+                    { role: 'user', content: prompt }
+                ],
+                stream: true
+            };
+
+            fetch('v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                isStreaming = true; // Set streaming flag
+                readStream(reader, decoder);
+            })
+            .catch(error => {
+                console.error('Error sending prompt:', error);
+                alert('Error sending prompt.');
+            });
+        }
+
+        // Function to read the stream and process data chunks
+        async function readStream(reader, decoder) {
+            const container = document.getElementById('token-container');
+            if (isStreaming) {
+                container.innerHTML = ''; // Clear previous content only at the start of streaming
+                tokenInfo.length = 0; // Clear previous token info only at the start of streaming
+                isStreaming = false; // Reset streaming flag after clearing
+            }
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+                lines.forEach(line => {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            let data;
+                            try {
+                                data = JSON.parse(line.slice(5));
+                            } catch (error) {
+                                console.error('JSON parsing error:', error.message);
+                                console.error('Problematic line:', line, ', length:', line.length);
+                                throw new Error(`Failed to parse JSON-response of LLM-server: ${error.message}.`);
+                            }
+                            //console.trace("data: ", data);
+                            if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                                const tokens = data.choices[0].delta.content.split(' ');
+                                const logprobs = data.choices[0].logprobs;
+                                const logAttns = logprobs.content[0].attentions;
+                                //console.log(`logprobs: ${logprobs}, logAttns: ${logAttns}`)
+                                //console.dir(logprobs, { depth: null, colors: true });
+                                //console.log(`logprobs: ${JSON.stringify(logprobs, null, 2)}`);
+
+                                //const mapAttn = (attention => attention);
+                                //const attentions = logAttns.map(mapAttn);
+                                //console.log(`tokens: ${tokens}, att: ${attentions}`);
+                                renderTokens(logprobs.content, false);
+                            }
+                        } catch (error) {
+                            console.error('Error parsing chunk:', error);
+                        }
+                    }
+                });
+            }
+        }
+
+        // Function to reset chat
+        function resetChat() {
+            // Remove prompt
+            document.getElementById('prompt').value = "";
+            // Clear the token container
+            document.getElementById('token-container').innerHTML = '';
+            // Clear the token info array
+            tokenInfo.length = 0;
+            // Clear the info field
+            document.getElementById('info-field').value = '';
+            // Clear arrows
+            clearArrows();
+            // Remove the LLAMA_SESS_ID cookie
+            document.cookie = "LLAMA_SESS_ID=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+        }
+
+        // Add event listener for file input
+        document.getElementById('file-input').addEventListener('change', handleFileUpload);
+
+        // Add event listener for send button
+        document.getElementById('send-button').addEventListener('click', sendPrompt);
+
+        // Add event listener for reset button
+        document.getElementById('reset-button').addEventListener('click', resetChat);
+    </script>
+</body>
+</html>
