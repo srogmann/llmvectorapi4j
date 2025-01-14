@@ -47,7 +47,9 @@ class LlamaHttpServer {
     record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler, Options options, S state, List<TokenDetails> conversationTokens) { ; }
 
     static enum JsonFormat {
+        /** format of llama.cpp/public_legacy */
         LLAMA_CPP,
+        /** format of llama.cpp/public */
         OPENAI
     }
 
@@ -151,7 +153,11 @@ class LlamaHttpServer {
                                 }
                                 systemPrompt = content;
                             }
+                            else if ("assistant".equals(role)) {
+                                continue;
+                            }
                             else if ("user".equals(role)) {
+                                // We take the last user-message.
                                 prompt = content;
                             }
                             else {

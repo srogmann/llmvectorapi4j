@@ -409,7 +409,7 @@ public abstract class Llama<S extends StateBase, W> {
      * @param echo             debugging flag, prints ALL, prompt and inferred tokens, to {@link System#err stderr}
      * @param stateCachePath   optional path of state-cache to read a key-value-cache
      * @param onTokenGenerated callback, if non-null, it's called every time a token is inferred e.g. it's not called when ingesting prompt tokens
-     * @param attentionLimit maximum number of attention-details to be traced per token
+     * @param attentionLimit maximum number of attention-details to be traced per token, 0 if disabled
      * @return list of generated/inferred tokens, including the stop token, if any e.g. does not include any token from the prompt
      */
     public static <S extends StateBase, W> List<TokenDetails> generateTokens(Llama<S, W> model, S state, int startPosition,
@@ -422,11 +422,10 @@ public abstract class Llama<S extends StateBase, W> {
         }
         
         final ConcurrentMap<Integer, List<AttentionDetail>> mapAttIdcs = new ConcurrentHashMap<>();
-        //final ConcurrentMap<Integer, List<ValueDetail>> mapalueIdcs = new ConcurrentHashMap<>();
         Configuration config = model.configuration();
         final int headSize = config.headSize;
         final int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
-        final AttentionConsumer attentionConsumer = (position, layer, head, att, offset, length, value, voffsetBase) -> {
+        final AttentionConsumer attentionConsumer = (attentionLimit <= 0) ? null : (position, layer, head, att, offset, length, value, voffsetBase) -> {
             List<AttentionDetail> attDetails = mapAttIdcs.computeIfAbsent(position, p -> Collections.synchronizedList(new ArrayList<>()));
             IntStream.range(0, length).mapToObj(idx -> {
                     float a = att.getFloat(offset + idx);
@@ -454,7 +453,6 @@ public abstract class Llama<S extends StateBase, W> {
             } catch (IOException e) {
                 throw new RuntimeException("IO-exception while reading state-cache " + stateCachePath, e);
             }
-            
         }
 
         List<TokenDetails> generatedTokens = new ArrayList<>(maxTokens);
@@ -482,7 +480,7 @@ public abstract class Llama<S extends StateBase, W> {
                 // Only compute logits on the very last batch.
                 boolean computeLogits = promptIndex + nTokens >= promptTokens.size();
                 model.forward(state, tokens, position, computeLogits, attentionConsumer);
-                if (onTokenGenerated != null) {
+                if (attentionConsumer != null && onTokenGenerated != null) {
                     for (int i = 0; i < nTokens; i++) {
                         int iToken = tokens[i];
                         byte[] bufToken = model.tokenizer().decode(List.of(iToken)).getBytes(StandardCharsets.UTF_8);
