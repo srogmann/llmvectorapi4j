@@ -4,27 +4,108 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 /**
  * A simple JSON-implementation to be used in this application only (to skip dependencies).
  * The recommendation is to use org.json or features like JAX-RS using DTOs in own projects.
  */
 class LightweightJsonHandler {
-    static String escapeString(String s) {
-        var sb = new StringBuilder(s.length() + 10);
-        dumpString(sb, s);
-        return sb.toString();
+
+    @SuppressWarnings("unchecked")
+    static void dumpJson(StringBuilder sb, Map<String, Object> map) {
+        sb.append('{');
+        String as = "";
+        for (Entry<String, Object> entry : map.entrySet()) {
+            sb.append(as);
+            dumpString(sb, entry.getKey());
+            sb.append(':');
+            var value = entry.getValue();
+            if (value == null) {
+                sb.append("null");
+            }
+            else if (value instanceof String s) {
+                dumpString(sb, s);
+            }
+            else if (value instanceof List) {
+                dumpJson(sb, (List<Object>) value);
+            }
+            else if (value instanceof Map) {
+                dumpJson(sb, (Map<String, Object>) value);
+            }
+            else if (value instanceof Boolean b) {
+                sb.append(b);
+            }
+            else if (value instanceof Integer i) {
+                sb.append(i);
+            }
+            else if (value instanceof Float f) {
+                sb.append(f);
+            }
+            else if (value instanceof BigDecimal bd) {
+                sb.append(bd);
+            }
+            else if (value instanceof byte[] buf) {
+                sb.append(Arrays.toString(buf));
+            }
+            else {
+                throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
+            }
+            as = ",";
+        }
+        sb.append('}');
     }
-    
+
+    @SuppressWarnings("unchecked")
+    private static void dumpJson(StringBuilder sb, List<Object> list) {
+        sb.append('[');
+        String as = "";
+        for (Object value : list) {
+            sb.append(as);
+            if (value == null) {
+                sb.append("null");
+            }
+            else if (value instanceof String s) {
+                dumpString(sb, s);
+            }
+            else if (value instanceof List) {
+                sb.append(value);
+            }
+            else if (value instanceof Map) {
+                dumpJson(sb, (Map<String, Object>) value);
+            }
+            else if (value instanceof Boolean b) {
+                sb.append(b);
+            }
+            else if (value instanceof Integer i) {
+                sb.append(i);
+            }
+            else if (value instanceof Float f) {
+                sb.append(f);
+            }
+            else if (value instanceof BigDecimal bd) {
+                sb.append(bd);
+            }
+            else {
+                throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
+            }
+            as = ",";
+        }
+        sb.append(']');
+    }
+
     private static void dumpString(StringBuilder sb, String s) {
         sb.append('"');
         for (int i = 0; i < s.length(); i++) {
             final char c = s.charAt(i);
             if (c == '"') {
                 sb.append("\\\"");
+            } else if (c == '\\') {
+                sb.append("\\\\");
             } else if ((c >= ' ' && c < 0x7f) || (c >= 0xa1 && c <= 0xff)) {
                 sb.append(c);
             } else if (c == '\n') {
@@ -45,6 +126,12 @@ class LightweightJsonHandler {
         sb.append('"');
     }
 
+    static String escapeString(String s) {
+        var sb = new StringBuilder(s.length() + 10);
+        dumpString(sb, s);
+        return sb.toString();
+    }
+    
     
     private static List<Object> parseJsonArray(BufferedReader br) throws IOException {
         // The '[' has been read already.

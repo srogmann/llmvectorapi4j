@@ -9,17 +9,14 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Reader;
-import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -185,7 +182,7 @@ class LlamaHttpServer {
                     mapError.put("errormsg", "Invalid request: " + e.getMessage());
                     mapError.put("jsonProcessed", tbr.sb.toString());
                     var sb = new StringBuilder();
-                    dumpJson(sb, mapError);
+                    LightweightJsonHandler.dumpJson(sb, mapError);
                     byte[] bufError = sb.toString().getBytes(StandardCharsets.UTF_8);
                     exchange.sendResponseHeaders(400, bufError.length);
                     exchange.setAttribute("Content-Type", "application/json");
@@ -298,7 +295,7 @@ class LlamaHttpServer {
                                         iStopToken, true, sToken, List.of(tokenDetail));
 
                                 var sbOut = new StringBuilder();
-                                dumpJson(sbOut, mapResponse);
+                                LightweightJsonHandler.dumpJson(sbOut, mapResponse);
                                 byte[] buf = String.format("data: %s\n\n", sbOut).getBytes(StandardCharsets.UTF_8);
                                 try {
                                     exchange.getResponseBody().write(buf);
@@ -330,7 +327,7 @@ class LlamaHttpServer {
                     System.err.println("Ran out of context length...");
                 }
                 var sbOut = new StringBuilder();
-                dumpJson(sbOut, mapResponse);
+                LightweightJsonHandler.dumpJson(sbOut, mapResponse);
                 byte[] buf;
                 if (options.stream()) {
                     buf = String.format("data: %s\n\n", sbOut).getBytes(StandardCharsets.UTF_8);
@@ -353,7 +350,7 @@ class LlamaHttpServer {
                 Map<String, Object> mapError = new HashMap<>();
                 mapError.put("errormsg", "Error while creating response");
                 var sb = new StringBuilder();
-                dumpJson(sb, mapError);
+                LightweightJsonHandler.dumpJson(sb, mapError);
                 byte[] bufError = sb.toString().getBytes(StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(400, bufError.length);
                 exchange.setAttribute("Content-Type", "application/json");
@@ -443,114 +440,6 @@ class LlamaHttpServer {
         choice0.put("finishReason", finishReason);
         choices.add(choice0);
         mapResponse.put("choices", choices);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static void dumpJson(StringBuilder sb, Map<String, Object> map) {
-        sb.append('{');
-        String as = "";
-        for (Entry<String, Object> entry : map.entrySet()) {
-            sb.append(as);
-            dumpString(sb, entry.getKey());
-            sb.append(':');
-            var value = entry.getValue();
-            if (value == null) {
-                sb.append("null");
-            }
-            else if (value instanceof String s) {
-                dumpString(sb, s);
-            }
-            else if (value instanceof List) {
-                dumpJson(sb, (List<Object>) value);
-            }
-            else if (value instanceof Map) {
-                dumpJson(sb, (Map<String, Object>) value);
-            }
-            else if (value instanceof Boolean b) {
-                sb.append(b);
-            }
-            else if (value instanceof Integer i) {
-                sb.append(i);
-            }
-            else if (value instanceof Float f) {
-                sb.append(f);
-            }
-            else if (value instanceof BigDecimal bd) {
-                sb.append(bd);
-            }
-            else if (value instanceof byte[] buf) {
-                sb.append(Arrays.toString(buf));
-            }
-            else {
-                throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
-            }
-            as = ",";
-        }
-        sb.append('}');
-    }
-
-    @SuppressWarnings("unchecked")
-    private static void dumpJson(StringBuilder sb, List<Object> list) {
-        sb.append('[');
-        String as = "";
-        for (Object value : list) {
-            sb.append(as);
-            if (value == null) {
-                sb.append("null");
-            }
-            else if (value instanceof String s) {
-                dumpString(sb, s);
-            }
-            else if (value instanceof List) {
-                sb.append(value);
-            }
-            else if (value instanceof Map) {
-                dumpJson(sb, (Map<String, Object>) value);
-            }
-            else if (value instanceof Boolean b) {
-                sb.append(b);
-            }
-            else if (value instanceof Integer i) {
-                sb.append(i);
-            }
-            else if (value instanceof Float f) {
-                sb.append(f);
-            }
-            else if (value instanceof BigDecimal bd) {
-                sb.append(bd);
-            }
-            else {
-                throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
-            }
-            as = ",";
-        }
-        sb.append(']');
-    }
-
-    private static void dumpString(StringBuilder sb, String s) {
-        sb.append('"');
-        for (int i = 0; i < s.length(); i++) {
-            final char c = s.charAt(i);
-            if (c == '"') {
-                sb.append("\\\"");
-            } else if ((c >= ' ' && c < 0x7f) || (c >= 0xa1 && c <= 0xff)) {
-                sb.append(c);
-            } else if (c == '\n') {
-                sb.append("\\n");
-            } else if (c == '\r') {
-                sb.append("\\r");
-            } else if (c == '\t') {
-                sb.append("\\t");
-            } else {
-                sb.append("\\u");
-                final String sHex = Integer.toHexString(c);
-                for (int j = sHex.length(); j < 4; j++) {
-                    sb.append('0');
-                }
-                sb.append(sHex);
-            }
-        }
-        sb.append('"');
     }
 
     private static byte[] readGzip(File file) throws IOException {
