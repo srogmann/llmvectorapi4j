@@ -1,7 +1,9 @@
 package org.rogmann.llmva4j;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -27,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionDetail;
 import org.rogmann.llmva4j.Llama.Options;
@@ -82,7 +85,8 @@ class LlamaHttpServer {
                     exchange.close();
                     return;
                 }
-                final File file = new File(pathBase, pathReq);
+                final File fileCheckGz = new File(pathBase, pathReq + ".gz");
+                final File file = fileCheckGz.isFile() ? fileCheckGz : new File(pathBase, pathReq);
                 if (!file.isFile()) {
                     System.err.println("No such file: " + file);
                     byte[] buf = "File not found".getBytes(StandardCharsets.UTF_8);
@@ -101,7 +105,7 @@ class LlamaHttpServer {
                     default -> "application/octet-stream";
                 };
                 exchange.getResponseHeaders().set("Content-type", contentType);
-                byte[] buf = Files.readAllBytes(file.toPath());
+                final byte[] buf = (file == fileCheckGz) ? readGzip(file) : Files.readAllBytes(file.toPath());
                 exchange.sendResponseHeaders(200, buf.length);
                 try (OutputStream os = exchange.getResponseBody()) {
                     os.write(buf);
@@ -541,6 +545,23 @@ class LlamaHttpServer {
             }
         }
         sb.append('"');
+    }
+
+    private static byte[] readGzip(File file) throws IOException {
+        final byte[] buf = new byte[16384];
+        try (InputStream fis = new FileInputStream(file);
+             InputStream gis = new GZIPInputStream(fis)) {
+            try (ByteArrayOutputStream baos = new ByteArrayOutputStream(16384)) {
+                while (true) {
+                    final int len = gis.read(buf);
+                    if (len == -1) {
+                        break;
+                    }
+                    baos.write(buf, 0, len);
+                }
+                return baos.toByteArray();
+            }
+        }
     }
 
     static class TeeBufferedReader extends BufferedReader {
