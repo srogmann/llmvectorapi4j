@@ -143,7 +143,8 @@
                 tokenInfo.push({
                     id: tokenElement.id,
                     position: tokenData.position,
-                    token: tokenData.tokenText,
+                    token: tokenData.token,
+                    tokenText: tokenData.tokenText,
                     left: rect.left,
                     top: rect.top,
                     width: rect.width,
@@ -156,7 +157,7 @@
                     clearArrows();
                     const info = tokenInfo.find(info => info.id === tokenElement.id);
                     if (info) {
-                        document.getElementById('info-field').value = `Token-Position: ${info.position}, Token: ${info.token}\nUI-Position: (${info.left.toFixed(2)}, ${info.top.toFixed(2)})\nSize: (${info.width.toFixed(2)}x${info.height.toFixed(2)})\nAttentions: ${JSON.stringify(info.attentions, null, 2)}`;
+                        document.getElementById('info-field').value = `Token-Position: ${info.position}, Token: ${info.token} (${JSON.stringify(info.tokenText)})\nUI-Position: (${info.left.toFixed(2)}, ${info.top.toFixed(2)})\nSize: (${info.width.toFixed(2)}x${info.height.toFixed(2)})\nAttentions: ${JSON.stringify(info.attentions, null, 2)}`;
                         drawArrowsForToken(info);
                     }
                 });

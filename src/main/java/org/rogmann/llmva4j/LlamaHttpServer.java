@@ -287,7 +287,7 @@ class LlamaHttpServer {
                     List<TokenDetails> responseTokens = Llama.generateTokens(model, httpSession.state(), startPosition, promptTokens, stopTokens, options.maxTokens(), sampler,
                             options.stateCache(), options.echo(), tokenDetail -> {
                         if (options.stream()) {
-                            if (!model.tokenizer().isSpecialToken(tokenDetail.token())) {
+                            if (!model.tokenizer().isSpecialToken(tokenDetail.token()) || options.attentionTrace() > 0) {
                                 String sToken = model.tokenizer().decode(List.of(tokenDetail.token()));
                                 System.out.print(sToken);
 
