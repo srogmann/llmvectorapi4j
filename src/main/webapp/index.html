@@ -111,7 +111,7 @@
         let isStreaming = false;
 
         // Function to render tokens
-        function renderTokens(tokens, clearContainer = false) {
+        function renderTokens(tokens, deltaContent, clearContainer = false) {
             const container = document.getElementById('token-container');
             if (clearContainer) {
                 container.innerHTML = ''; // Clear previous content
@@ -122,6 +122,9 @@
                 const tokenElement = document.createElement('span');
                 tokenElement.className = 'token';
                 tokenElement.textContent = tokenData.tokenText;
+                if (index == 0 && deltaContent !== null && deltaContent != tokenData.tokenText) {
+                    tokenElement.textContent += "(" + deltaContent + ")";
+                }
                 tokenElement.id = `token-${tokenData.position}`;
                 //console.log("renderTokens, pos ", tokenData.position, ", el.id ", tokenElement.id);
 
@@ -275,7 +278,7 @@
                     try {
                         const data = JSON.parse(e.target.result);
                         if (Array.isArray(data)) {
-                            renderTokens(data, true);
+                            renderTokens(data, null, true);
                             isStreaming = false; // Reset streaming flag
                         } else {
                             alert('Invalid JSON format. Expected an array of tokens.');
@@ -352,9 +355,13 @@
                                 throw new Error(`Failed to parse JSON-response of LLM-server: ${error.message}.`);
                             }
                             //console.trace("data: ", data);
-                            if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
-                                const tokens = data.choices[0].delta.content.split(' ');
+                            if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].logprobs.content[0]) {
+                                const delta = data.choices[0].delta;
+                                const tokens = delta.content.split(' ');
                                 const logprobs = data.choices[0].logprobs;
+                                if (!logprobs.content[0]) {
+                                    console.error('No logprobs.content: ', data);
+                                }
                                 const logAttns = logprobs.content[0].attentions;
                                 //console.log(`logprobs: ${logprobs}, logAttns: ${logAttns}`)
                                 //console.dir(logprobs, { depth: null, colors: true });
@@ -363,7 +370,7 @@
                                 //const mapAttn = (attention => attention);
                                 //const attentions = logAttns.map(mapAttn);
                                 //console.log(`tokens: ${tokens}, att: ${attentions}`);
-                                renderTokens(logprobs.content, false);
+                                renderTokens(logprobs.content, delta.content, false);
                             }
                         } catch (error) {
                             console.error('Error parsing chunk:', error);
