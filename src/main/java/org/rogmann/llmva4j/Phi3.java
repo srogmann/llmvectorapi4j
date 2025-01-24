@@ -150,6 +150,7 @@ public class Phi3 {
         Options options = Options.parseOptions(args);
         Phi3Model model = Phi3ModelLoader.loadModel(options.modelPath(), options.maxTokens());
         Sampler sampler = Llama.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
+        // No http-server support in Phi3 because the TokenizerSPM is not yet compatible.
         if (options.interactive()) {
             runInteractive(model, sampler, options);
         } else {
@@ -350,7 +351,7 @@ public class Phi3 {
             }
         }
 
-        public FloatTensor forward(State state, int[] tokens, int position, boolean computeLogits, AttentionConsumer ac) {
+        public FloatTensor forward(State state, int[] tokens, int position, boolean computeLogits, AttentionConsumer attentionConsumer) {
             final int token = tokens[0];
             // a few convenience variables
             Llama.Configuration config = configuration();
@@ -484,6 +485,14 @@ public class Phi3 {
 
                     // softmax the scores to get attention weights, from 0..position inclusively
                     state.att.softmaxInPlace(attOffset, position + 1);
+
+                    // Optional analysis of the attention.
+                    if (attentionConsumer != null) {
+                        int vOffsetBase = (h / kvMul) * headSize;
+                        attentionConsumer.accept(position, curLayer, h,
+                                state.att, attOffset, position + 1,
+                                state.valueCache[curLayer], vOffsetBase);
+                    }
 
                     if (debug && h <= 2 && idxLayer < 3) {
                         System.out.println(String.format("Layer %d, Head %d, Attention: %s, ...", idxLayer, h,

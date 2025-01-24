@@ -158,7 +158,7 @@ public class Llama3 extends Llama<State, Weights> {
 
             // multihead attention. iterate over all heads
             Parallel.parallelForLong(0, (long) nTokens * (long) config.numberOfHeads, ht -> {
-                int token = (int) (ht / config.numberOfHeads);
+                int idxToken = (int) (ht / config.numberOfHeads);
                 int h = (int) (ht % config.numberOfHeads);
                 // get the query vector for this head
                 // float* q = s.q + h * headSize;
@@ -169,34 +169,42 @@ public class Llama3 extends Llama<State, Weights> {
                 int attOffset = h * config.contextLength;
 
                 // iterate over all timesteps, including the current one
-                for (int t = 0; t <= position + token; t++) {
+                for (int t = 0; t <= position + idxToken; t++) {
                     // get the key vector for this head and at this timestep
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
                     int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
                     // calculate the attention score as the dot product of q and k
-                    float score = state.q[token].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+                    float score = state.q[idxToken].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
-                    state.att[token].setFloat(attOffset + t, score);
+                    state.att[idxToken].setFloat(attOffset + t, score);
                 }
 
                 // softmax the scores to get attention weights, from 0..position inclusively
-                state.att[token].softmaxInPlace(attOffset, position + token + 1);
+                state.att[idxToken].softmaxInPlace(attOffset, position + idxToken + 1);
+
+                // Optional analysis of the attention.
+                if (attentionConsumer != null) {
+                    int vOffsetBase = (h / kvMul) * headSize;
+                    attentionConsumer.accept(position + idxToken, curLayer, h,
+                            state.att[idxToken], attOffset, position + idxToken + 1,
+                            state.valueCache[curLayer], vOffsetBase);
+                }
 
                 // weighted sum of the values, store back into xb
                 // float* xb = s.xb + h * headSize;
                 int xbOffset = h * headSize;
                 // memset(xb, 0, headSize * sizeof(float));
-                state.xb[token].fillInPlace(xbOffset, headSize, 0f);
+                state.xb[idxToken].fillInPlace(xbOffset, headSize, 0f);
 
-                for (int t = 0; t <= position + token; t++) {
+                for (int t = 0; t <= position + idxToken; t++) {
                     // get the value vector for this head and at this timestep
                     // float* v = s.value_cache + loff + t * dim + h * headSize;
                     int vOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
                     // get the attention weight for this timestep
-                    float a = state.att[token].getFloat(attOffset + t);
+                    float a = state.att[idxToken].getFloat(attOffset + t);
                     // accumulate the weighted value into xb
-                    state.xb[token].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
+                    state.xb[idxToken].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
                 }
             });
 
