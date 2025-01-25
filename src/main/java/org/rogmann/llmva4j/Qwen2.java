@@ -143,10 +143,8 @@ public class Qwen2 {
         Options options = Options.parseOptions(args);
         Qwen2Llama model = Qwen2ModelLoader.loadModel(options.modelPath(), options.maxTokens());
         Sampler sampler = Llama.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
-        String host = System.getProperty("llm.server.host");
-        int port = Integer.parseInt(System.getProperty("llm.server.port", "8089"));
-        if (host != null) {
-            LlamaHttpServer.runHttpServer(model, sampler, options, host, port);
+        if (options.serverPath() != null) {
+            LlamaHttpServer.runHttpServer(model, sampler, options, options.serverHost(), options.serverPort());
         } else if (options.interactive()) {
             runInteractive(model, sampler, options);
         } else {

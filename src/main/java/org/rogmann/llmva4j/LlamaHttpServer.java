@@ -71,7 +71,7 @@ class LlamaHttpServer {
             System.out.format("httpserver: request of %s by %s%n", exchange.getRequestURI(), exchange.getRemoteAddress());
             if ("GET".equals(exchange.getRequestMethod())) {
                 String pathReq = exchange.getRequestURI().getPath();
-                String pathBase = System.getProperty("llm.server.path", "public");
+                String pathBase = optionsGlobal.serverPath();
                 if ("/".equals(pathReq)) {
                     pathReq = "index.html";
                 }
@@ -235,7 +235,9 @@ class LlamaHttpServer {
                         boolean stream = LightweightJsonHandler.readBoolean(mapRequest, "stream", optionsGlobal.stream());
                         Options optionsReq = new Options(optionsGlobal.modelPath(), "", optionsGlobal.systemPrompt(), true,
                                 temperature, topP, seed, maxComplTokens, stream,
-                                optionsGlobal.echo(), optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(),
+                                optionsGlobal.echo(),
+                                optionsGlobal.serverHost(), optionsGlobal.serverPort(), optionsGlobal.serverPath(),
+                                optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(),
                                 optionsGlobal.attentionTrace());
                         System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
                                 temperature, topP, maxComplTokens, seed);

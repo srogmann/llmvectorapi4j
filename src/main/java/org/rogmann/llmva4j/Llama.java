@@ -144,7 +144,7 @@ public abstract class Llama<S extends StateBase, W> {
 
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
             float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo,
-            Path stateCacheFolder, Path stateCache, int attentionTrace) {
+            String serverHost, int serverPort, String serverPath, Path stateCacheFolder, Path stateCache, int attentionTrace) {
 
         static final int DEFAULT_MAX_TOKENS = 512;
 
@@ -179,6 +179,9 @@ public abstract class Llama<S extends StateBase, W> {
             out.println("  --max-tokens, -n <int>        number of steps to run for < 0 = limited by context length, default " + DEFAULT_MAX_TOKENS);
             out.println("  --stream <boolean>            print tokens during generation; may cause encoding artifacts for non ASCII text, default true");
             out.println("  --echo <boolean>              print ALL tokens to stderr, if true, recommended to set --stream=false, default false");
+            out.println("  --host <ip>                   optional ip-address of http-server (default 127.0.0.1)");
+            out.println("  --port <port>                 optional port number of http-server (default 8080)");
+            out.println("  --path <path>                 optional path of public-html of http-server");
             out.println("  --state-cache-folder          optional folder to store state-caches (to save .ggsc-files)");
             out.println("  --state-cache, -sc path       optional state-cache to be used (read .ggsc-file)");
             out.println("  --attention-trace <int>       maximum number of attentions to be traced per token");
@@ -203,6 +206,9 @@ public abstract class Llama<S extends StateBase, W> {
             boolean interactive = false;
             boolean stream = true;
             boolean echo = false;
+            String serverHost = "127.0.0.1";
+            int serverPort = 8080;
+            String serverPath = null;
             Path stateCacheFolder = null;
             Path stateCache = null;
             int attentionTrace = 0;
@@ -238,6 +244,9 @@ public abstract class Llama<S extends StateBase, W> {
                             case "--max-tokens", "-n" -> maxTokens = Integer.parseInt(nextArg);
                             case "--stream" -> stream = Boolean.parseBoolean(nextArg);
                             case "--echo" -> echo = Boolean.parseBoolean(nextArg);
+                            case "--host" -> serverHost = nextArg;
+                            case "--port" -> serverPort = Integer.parseInt(nextArg);
+                            case "--path" -> serverPath = nextArg;
                             case "--state-cache-folder" -> stateCacheFolder = Paths.get(nextArg);
                             case "--state-cache", "-sc" -> stateCache = Paths.get(nextArg);
                             case "--attention-trace" -> attentionTrace = Integer.parseInt(nextArg);
@@ -247,7 +256,7 @@ public abstract class Llama<S extends StateBase, W> {
                 }
             }
             return new Options(modelPath, prompt, systemPrompt, interactive, temperature, topp, seed, maxTokens, stream, echo,
-                    stateCacheFolder, stateCache, attentionTrace);
+                    serverHost, serverPort, serverPath, stateCacheFolder, stateCache, attentionTrace);
         }
     }
 
