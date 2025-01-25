@@ -160,7 +160,9 @@
                     clearArrows();
                     const info = tokenInfo.find(info => info.id === tokenElement.id);
                     if (info) {
-                        document.getElementById('info-field').value = `Token-Position: ${info.position}, Token: ${info.token} (${JSON.stringify(info.tokenText)})\nUI-Position: (${info.left.toFixed(2)}, ${info.top.toFixed(2)})\nSize: (${info.width.toFixed(2)}x${info.height.toFixed(2)})\nAttentions: ${JSON.stringify(info.attentions, null, 2)}`;
+                        // UI-Position: (${info.left.toFixed(2)}, ${info.top.toFixed(2)})
+                        // Size: (${info.width.toFixed(2)}x${info.height.toFixed(2)})
+                        document.getElementById('info-field').value = `Token-Position: ${info.position}, Token: ${info.token} (${JSON.stringify(info.tokenText)})\nAttentions: ${JSON.stringify(info.attentions, null, 2)}`;
                         drawArrowsForToken(info);
                     }
                 });
