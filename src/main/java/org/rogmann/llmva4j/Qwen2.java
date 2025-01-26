@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
+import org.rogmann.llmva4j.ChatFormat.ChatTokens;
 import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Options;
@@ -112,7 +113,7 @@ public class Qwen2 {
 
     static void runInstructOnce(Qwen2Llama model, Sampler sampler, Options options) {
         State state = model.createNewState(Llama.BATCH_SIZE);
-        Qwen2ChatMLFormat chatFormat = new Qwen2ChatMLFormat(model.tokenizer());
+        ChatFormat chatFormat = model.chatFormat();
         List<Integer> promptTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
             promptTokens.addAll(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt())));
@@ -172,7 +173,8 @@ final class Qwen2ModelLoader {
             Map<String, Object> metadata = gguf.getMetadata();
 
             Vocabulary vocabulary = loadVocabulary(metadata);
-            Tokenizer tokenizer = createTokenizer(metadata, vocabulary);
+            boolean isDeepSeekR1DistillQwen = "DeepSeek-R1-Distill-Qwen".equals(metadata.get("general.basename"));
+            Tokenizer tokenizer = createTokenizer(metadata, vocabulary, isDeepSeekR1DistillQwen);
 
             int modelContextLength = (int) metadata.get("qwen2.context_length");
             if (contextLength < 0 || modelContextLength < contextLength) {
@@ -231,13 +233,16 @@ final class Qwen2ModelLoader {
                             : tokenEmbeddingTable // weights are shared
             );
 
-            return new Qwen2Llama(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw);
+            ChatTokens chatTokens = isDeepSeekR1DistillQwen ?
+                    new ChatTokens( "<｜end▁of▁sentence｜>", "", "", "<｜end▁of▁sentence｜>") :
+                    new ChatTokens( "<|im_start|>", "<|im_end|>", "", "<|end_of_text|>");
+            return new Qwen2Llama(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw, chatTokens);
         }
     }
 
     private final static String QWEN2_PATTERN = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
-    private static Tokenizer createTokenizer(Map<String, Object> metadata, Vocabulary vocabulary) {
+    private static Tokenizer createTokenizer(Map<String, Object> metadata, Vocabulary vocabulary, boolean isDeepSeekR1DistillQwen) {
         int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
         String[] mergeLines = (String[]) metadata.get("tokenizer.ggml.merges");
         List<Pair<Integer, Integer>> merges = Arrays.stream(mergeLines)
@@ -249,7 +254,8 @@ final class Qwen2ModelLoader {
                 ).toList();
 
         int allTokens = vocabulary.size();
-        int baseTokens = vocabulary.getIndex("<|endoftext|>").orElseThrow(); // assume all tokens after the base ones are special.
+        String firstSpecialToken = isDeepSeekR1DistillQwen ? "<｜end▁of▁sentence｜>" : "<|endoftext|>";
+        int baseTokens = vocabulary.getIndex(firstSpecialToken).orElseThrow(); // assume all tokens after the base ones are special.
         // int reservedSpecialTokens = allTokens - baseTokens;
         List<String> specialTokensList = Arrays.stream(vocabulary.tokens(), baseTokens, allTokens).toList();
 
@@ -270,13 +276,16 @@ final class Qwen2ModelLoader {
 
 class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
 
-    public Qwen2Llama(String modelName, Configuration configuration, Tokenizer tokenizer, Weights weights) {
-        super(modelName, configuration, tokenizer, weights, new Qwen2ChatMLFormat(tokenizer));
+    private ChatTokens chatTokens;
+
+    public Qwen2Llama(String modelName, Configuration configuration, Tokenizer tokenizer, Weights weights, ChatTokens chatTokens) {
+        super(modelName, configuration, tokenizer, weights, new Qwen2ChatMLFormat(tokenizer, chatTokens));
+        this.chatTokens = chatTokens;
     }
 
     public State createNewState(int batchsize) {
         State state = new State(configuration(), batchsize);
-        state.latestToken = tokenizer.getSpecialTokens().get("<|im_start|>");
+        state.latestToken = tokenizer.getSpecialTokens().get(chatTokens.tStartHeader());
         return state;
     }
 
@@ -554,8 +563,8 @@ class Qwen2ChatMLFormat extends ChatFormat {
     protected final int imStart; // beginOfText
     protected final int imEnd; // endOfText
 
-    public Qwen2ChatMLFormat(Tokenizer tokenizer) {
-        super(tokenizer, "", "<|im_start|>", "<|im_end|>", "", "<|end_of_text|>", "");
+    public Qwen2ChatMLFormat(Tokenizer tokenizer, ChatTokens chatTokens) {
+        super(tokenizer, "", chatTokens.tStartHeader(), chatTokens.tEndHeader(), chatTokens.tEndOfTurn(), chatTokens.tEndOfText(), "");
 
         imStart = super.startHeader;
         imEnd = super.endHeader;
@@ -566,21 +575,46 @@ class Qwen2ChatMLFormat extends ChatFormat {
     }
 
     public Set<Integer> getStopTokens() {
+        if (imEnd == -1 && endOfText == -1) {
+            throw new IllegalStateException("No stop token is defined.");
+        }
+        if (imEnd == -1) {
+            return Set.of(endOfText);
+        }
         return Set.of(imEnd, endOfText);
     }
 
     public List<Integer> encodeHeader(Message message) {
         List<Integer> tokens = new ArrayList<>();
-        tokens.add(imStart);
-        tokens.addAll(this.tokenizer.encodeAsList(message.role().name()));
-        tokens.addAll(this.tokenizer.encodeAsList("\n"));
+        if (endHeader == -1) {
+            // DeepSeek-R1
+            String sToken = switch (message.role().name()) {
+            case "system" -> null;
+            case "user" -> "<｜User｜>";
+            case "assistant" -> "<｜Assistant｜>";
+            default -> null;
+            };
+            if (sToken != null) {
+                Integer token = tokenizer.getSpecialTokens().get("<｜User｜>");
+                if (token == null) {
+                    throw new IllegalStateException(String.format("Unknown token '%s'", sToken));
+                }
+                tokens.add(token);
+            }
+        } else {
+            tokens.add(imStart);
+            tokens.addAll(this.tokenizer.encodeAsList(message.role().name()));
+            tokens.addAll(this.tokenizer.encodeAsList("\n"));
+        }
         return tokens;
     }
 
     public List<Integer> encodeMessage(Message message) {
         List<Integer> tokens = this.encodeHeader(message);
         tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
-        tokens.add(imEnd);
+        if (imEnd != -1) {
+            tokens.add(imEnd);
+        }
         return tokens;
     }
 

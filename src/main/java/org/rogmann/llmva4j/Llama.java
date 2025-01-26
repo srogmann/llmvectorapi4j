@@ -1294,7 +1294,8 @@ class Tokenizer {
 
     public String decode(List<Integer> tokens) {
         String decoded = decodeImpl(tokens);
-        int[] decodedBytesAsInts = decoded.codePoints().map(BYTE_DECODER::get).toArray();
+        // The '｜' in '<｜end▁of▁sentence｜>' of DeepSeek-R1 has code-point 65372.
+        int[] decodedBytesAsInts = decoded.codePoints().map(cp -> cp <= 512 ? BYTE_DECODER.get(cp) : cp).toArray();
         byte[] rawBytes = new byte[decodedBytesAsInts.length + 3];
         int indexRawByte = 0;
     loopDecoded:
@@ -1331,7 +1332,7 @@ class Tokenizer {
      */
     String decodeOneToken(int token) {
         String decoded = vocabulary.get(token);
-        int[] decodedBytesAsInts = decoded.codePoints().map(BYTE_DECODER::get).toArray();
+        int[] decodedBytesAsInts = decoded.codePoints().map(cp -> (cp <= 512 ? BYTE_DECODER.get(cp) : cp)).toArray();
         byte[] rawBytes = new byte[decodedBytesAsInts.length];
         for (int i = 0; i < decodedBytesAsInts.length; i++) {
             rawBytes[i] = (byte) decodedBytesAsInts[i];
@@ -2159,6 +2160,8 @@ abstract class ChatFormat {
     protected final int endOfText;
     protected final int endOfMessage;
 
+    public record ChatTokens(String tStartHeader, String tEndHeader, String tEndOfTurn, String tEndOfText) { }
+
     public ChatFormat(Tokenizer tokenizer, 
             String tBeginOfText, 
             String tStartHeader, 
@@ -2170,7 +2173,7 @@ abstract class ChatFormat {
         Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
         this.beginOfText = specialTokens.getOrDefault(tBeginOfText, -1);
         this.startHeader = specialTokens.getOrDefault(tStartHeader, -1);
-        this.endHeader = specialTokens.get(tEndHeader);
+        this.endHeader = specialTokens.getOrDefault(tEndHeader, -1);
         this.endOfTurn = specialTokens.getOrDefault(tEndOfTurn, -1);
         this.endOfText = specialTokens.getOrDefault(tEndOfText, -1);
         this.endOfMessage = specialTokens.getOrDefault(tEndOfMessage, -1); // Use default value if key not found
@@ -2188,21 +2191,25 @@ abstract class ChatFormat {
         List<Integer> tokens = new ArrayList<>();
         tokens.add(startHeader);
         tokens.addAll(this.tokenizer.encodeAsList(message.role().name()));
-        tokens.add(endHeader);
-        tokens.addAll(this.tokenizer.encodeAsList("\n"));
+        if (endHeader != -1) {
+            tokens.add(endHeader);
+            tokens.addAll(this.tokenizer.encodeAsList("\n"));
+        }
         return tokens;
     }
 
     public List<Integer> encodeMessage(ChatFormat.Message message) {
         List<Integer> tokens = this.encodeHeader(message);
         tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
-        tokens.add(endOfTurn);
+        if (endOfTurn != -1) {
+            tokens.add(endOfTurn);
+        }
         return tokens;
     }
 
     public List<TokenDetails> toTokenDetails(List<Integer> tokens) {
         List<TokenDetails> tokenDetails = new ArrayList<>();
-        for (int i=0; i<tokens.size(); i++) {
+        for (int i = 0; i < tokens.size(); i++) {
             int token = tokens.get(i);
             tokenDetails.add(new TokenDetails(i, token, false,
                     0.0f, tokenizer.decode(List.of(token)).getBytes(StandardCharsets.UTF_8),
