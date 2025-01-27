@@ -1,4 +1,12 @@
 <!DOCTYPE html>
+<!-- I used Qwen2.5-Coder-32B to create the initial HTML-code.
+
+Model: qwen2.5-coder-32b-instruct-q6_k
+Prompt 1: I need a HTML-page with embedded javascript to display text-tokens. A text-token is a short text-string. I want to display a text consisting of text-tokens and I need the position and size of each token. Create a function which renders a text given a list of text-tokens and stores the position and size of each token and the HTML-id to modify it later. The title of the page is "LLM Attention Analysis".
+Prompt 2: Add a javascript-listener which catches hover-events on the token. If the user hovers over a token, the position and size of the token should be display in a  textfield below of the text.
+Prompt 3: I would like to be able to display some bended arrows from one token to another token. How to do that? A SVG in a different z-position?
+Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contains a list of tokens, a token is a dictionary with keys tokenText containing the text-token and key attentions with value a list of attentions. A attention is a dictionary with keys "reference-token", "layer", "head" and "score". The reference-token points to a previous token in the list of tokens, it's an index in the token-list. While hovering display the references of the current token to the previous token using the arrows introduced before.
+ -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
