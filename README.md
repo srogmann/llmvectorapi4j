@@ -18,9 +18,9 @@ This project has no dependencies on other libraries. You may have a look at [Lan
 
 ## Display of Attentions
 
-Link to <a href="docs/LLM-Attention.01.webm">animation</a>:
+Link to <a href="raw/refs/heads/main/docs/LLM-Attention.01.webm">animation</a>:
 <div align="center">
-  <a href="docs/LLM-Attention.01.webm"><img src="docs/LLM-Attention.01.png" width="662" height="515" /></a>
+  <a href="raw/refs/heads/main/docs/LLM-Attention.01.webm"><img src="docs/LLM-Attention.01.png" width="662" height="515" /></a>
 </div>
 
 ## Usage
