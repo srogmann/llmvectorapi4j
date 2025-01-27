@@ -18,9 +18,10 @@ This project has no dependencies on other libraries. You may have a look at [Lan
 
 ## Display of Attentions
 
-<video controls width="661" poster="docs/LLM-Attention.01.png">
-  <source src="docs/LLM-Attention.01.webm" type="video/webm" />
-</video>
+Link to <a href="docs/LLM-Attention.01.webm">animation</a>:
+<div align="center">
+  <a href="docs/LLM-Attention.01.webm"><img src="docs/LLM-Attention.01.png" width="662" height="515" /></a>
+</div>
 
 ## Usage
 ```
