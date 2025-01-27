@@ -18,6 +18,8 @@ This project has no dependencies on other libraries. You may have a look at [Lan
 
 ## Display of Attentions
 
+If the display of attentions is enabled, the attentions with long value-vectors are displayed. In a translation from english to chinese at the token "三" the model might be interested in the english word "three" (see picture below).
+
 Link to <a href="https://github.com/srogmann/llmvectorapi4j/raw/refs/heads/main/docs/LLM-Attention.01.webm">animation</a>:
 <div align="center">
   <a href="https://github.com/srogmann/llmvectorapi4j/raw/refs/heads/main/docs/LLM-Attention.01.webm"><img src="docs/LLM-Attention.01.png" width="662" height="515" /></a>
