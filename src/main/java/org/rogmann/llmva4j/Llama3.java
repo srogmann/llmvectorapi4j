@@ -11,6 +11,8 @@ import java.util.Scanner;
 import java.util.Set;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
+import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.State;
 import org.rogmann.llmva4j.Llama.Weights;
 
@@ -29,10 +31,13 @@ public class Llama3 extends Llama<State, Weights> {
     static void runInteractive(Llama3 model, Sampler sampler, Options options) {
         Llama.State state = null;
         List<TokenDetails> conversationTokens = new ArrayList<>();
+        List<Message> conversation = new ArrayList<>();
         ChatFormat chatFormat = model.chatFormat();
         conversationTokens.addAll(chatFormat.toTokenDetails(Collections.singletonList(chatFormat.beginOfText)));
         if (options.systemPrompt() != null) {
-            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt()))));
+            Message msgSystem = new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt());
+            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(msgSystem)));
+            conversation.add(msgSystem);
         }
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
@@ -53,7 +58,7 @@ public class Llama3 extends Llama<State, Weights> {
                 if (userText.startsWith("/save:")) {
                     StateCache stateCache = new StateCache(model.configuration(), state);
                     try {
-                        String msg = stateCache.saveKVCache(userText, options.stateCacheFolder(), conversationTokens);
+                        String msg = stateCache.saveKVCache(userText, options.stateCacheFolder(), conversationTokens, conversation);
                         System.out.println(msg);
                     } catch (IllegalStateException e) {
                         System.err.println(e.getMessage());
@@ -63,15 +68,20 @@ public class Llama3 extends Llama<State, Weights> {
                 if (state == null) {
                     state = model.createNewState(Llama.BATCH_SIZE);
                 }
-                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new ChatFormat.Message(ChatFormat.Role.USER, userText))));
+                Message msgUser = new ChatFormat.Message(ChatFormat.Role.USER, userText);
+                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(msgUser)));
                 conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""))));
+                conversation.add(msgUser);
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
+                StringBuilder sbResponse = new StringBuilder(200);
                 List<TokenDetails> responseTokens = generateTokens(model, state, startPosition, promptTokens, stopTokens, options.maxTokens(), sampler,
                         options.stateCache(), options.echo(), tokenDetail -> {
                     if (options.stream()) {
                         if (!model.tokenizer().isSpecialToken(tokenDetail.token())) {
-                            System.out.print(model.tokenizer().decode(List.of(tokenDetail.token())));
+                            String sToken = model.tokenizer().decode(List.of(tokenDetail.token()));
+                            System.out.print(sToken);
+                            sbResponse.append(sToken);
                         }
                     }
                 }, options.attentionTrace());
@@ -86,7 +96,9 @@ public class Llama3 extends Llama<State, Weights> {
                 if (!options.stream()) {
                     String responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
                     System.out.println(responseText);
+                    sbResponse.append(responseText);
                 }
+                conversation.add(new Message(Role.ASSISTANT, sbResponse.toString()));
                 if (stopToken == null) {
                     System.err.println("Ran out of context length...");
                     break;

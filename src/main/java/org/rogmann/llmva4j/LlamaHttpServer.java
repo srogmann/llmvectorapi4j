@@ -23,12 +23,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionDetail;
+import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
@@ -41,14 +42,8 @@ import com.sun.net.httpserver.HttpServer;
  * Optionally static HTML-pages of a GUI can be served.
  */
 class LlamaHttpServer {
-    record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler, Options options, S state, List<TokenDetails> conversationTokens) { ; }
-
-    static enum JsonFormat {
-        /** format of llama.cpp/public_legacy */
-        LLAMA_CPP,
-        /** format of llama.cpp/public */
-        OPENAI
-    }
+    record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler,
+            Options options, S state, List<TokenDetails> conversationTokens, List<ChatFormat.Message> conversation) { ; }
 
     /**
      * Starts a HTTP-server to server requests in Llama.cpp-style.
@@ -112,7 +107,7 @@ class LlamaHttpServer {
                 exchange.close();
                 return;
             }
-            List<ChatFormat.Message> chatMessages = new ArrayList<>();
+            List<Message> requestMessages = new ArrayList<>();
             final Map<String, Object> mapRequest;
             try (InputStream is = exchange.getRequestBody();
                     InputStreamReader isr = new InputStreamReader(is);
@@ -123,57 +118,24 @@ class LlamaHttpServer {
                     mapRequest = LightweightJsonHandler.parseJsonDict(tbr);
 
                     List<Map<String, Object>> messages = LightweightJsonHandler.getJsonArrayDicts(mapRequest, "messages");
-                    String prompt = LightweightJsonHandler.getJsonValue(mapRequest, "prompt", String.class);
-                    if (prompt != null) {
-                        // llama.cpp chat sends the whole chat as a long string :-/.
-                        Pattern pLlamaCppChatDefault = Pattern.compile(".*\nUser: (.*)\nLlama:", Pattern.DOTALL);
-                        Matcher m = pLlamaCppChatDefault.matcher(prompt);
-                        if (m.matches()) {
-                            prompt = m.group(1);
+                    if (messages == null) {
+                        throw new IllegalArgumentException("The request doesn't contain messages.");
+                    }
+                    for (Map<String, Object> msg : messages) {
+                        String roleName = LightweightJsonHandler.getJsonValue(msg, "role", String.class);
+                        String content = LightweightJsonHandler.getJsonValue(msg, "content", String.class);
+                        if (roleName == null) {
+                            throw new IllegalArgumentException("role is missing in incoming message.");
                         }
-                    }
-
-                    String systemPrompt = optionsGlobal.systemPrompt();
-                    if (messages != null) {
-                        for (Map<String, Object> msg : messages) {
-                            String role = LightweightJsonHandler.getJsonValue(msg, "role", String.class);
-                            String content = LightweightJsonHandler.getJsonValue(msg, "content", String.class);
-                            if (role == null) {
-                                throw new IllegalArgumentException("role is missing in incoming message.");
-                            }
-                            if (content == null) {
-                                throw new IllegalArgumentException("content is missing in incoming message.");
-                            }
-                            if ("system".equals(role)) {
-                                if (systemPrompt != null) {
-                                    throw new IllegalArgumentException("Can't overwrite system-prompt.");
-                                }
-                                systemPrompt = content;
-                            }
-                            else if ("assistant".equals(role)) {
-                                continue;
-                            }
-                            else if ("user".equals(role)) {
-                                // We take the last user-message.
-                                prompt = content;
-                            }
-                            else {
-                                throw new IllegalArgumentException("Unexpected role in message: " + role);
-                            }
+                        if (content == null) {
+                            throw new IllegalArgumentException("content is missing in incoming message.");
                         }
+                        if ("/stop".equalsIgnoreCase(content)) {
+                            refServer.get().stop(0);
+                            throw new IllegalArgumentException("Server is stopping");
+                        }
+                        requestMessages.add(new Message(new Role(roleName), content));
                     }
-                    if (prompt == null) {
-                        System.out.println("Map: " + mapRequest);
-                        throw new IllegalArgumentException("Prompt is missing in request");
-                    }
-                    if ("STOP".equalsIgnoreCase(prompt)) {
-                        refServer.get().stop(0);
-                        throw new IllegalArgumentException("Server is stopping");
-                    }
-                    if (systemPrompt != null) {
-                        chatMessages.add(new ChatFormat.Message(ChatFormat.Role.SYSTEM, systemPrompt));
-                    }
-                    chatMessages.add(new ChatFormat.Message(ChatFormat.Role.USER, prompt));
                 }
                 catch (RuntimeException e) {
                     System.out.println("JSON-Prefix: " + tbr.sb);
@@ -198,8 +160,6 @@ class LlamaHttpServer {
                 return;
             }
 
-            JsonFormat format = mapRequest.containsKey("messages" ) ? JsonFormat.OPENAI : JsonFormat.LLAMA_CPP;
-
             try {
                 List<String> lCookies = exchange.getRequestHeaders().get("Cookie");
                 String cookie = (lCookies != null) ? lCookies.get(0) : null;
@@ -212,12 +172,6 @@ class LlamaHttpServer {
                         if (httpSession == null) {
                             System.err.format("Llama-HTTP-session (%s) doesn't exist (any more)%n", sessionKey);
                             sessionKey = null;
-                        }
-                    }
-                    if (httpSession != null && httpSession.conversationTokens().size() > 0) {
-                        if (ChatFormat.Role.SYSTEM.equals(chatMessages.get(0).role())) {
-                            // System-prompt at begin only.
-                            chatMessages.remove(0);
                         }
                     }
                     if (httpSession == null) {
@@ -242,23 +196,64 @@ class LlamaHttpServer {
                         System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
                                 temperature, topP, maxComplTokens, seed);
                         final List<TokenDetails> conversationTokens = new ArrayList<>();
-                        httpSession = new LlamaHttpSession<>(sessionKey, model, sampler, optionsReq, state, conversationTokens);
+                        final List<ChatFormat.Message> conversation = new ArrayList<>();
+                        httpSession = new LlamaHttpSession<>(sessionKey, model, sampler, optionsReq, state, conversationTokens, conversation);
                         mapSessions.put(sessionKey, httpSession);
                     }
                 }
                 final String sessionKey = httpSession.sessionKey();
                 final Options options = httpSession.options();
                 final List<TokenDetails> conversationTokens = httpSession.conversationTokens();
+                final List<ChatFormat.Message> conversation = httpSession.conversation();
                 int startPosition = conversationTokens.size();
                 
+                int offsetSystem = (options.systemPrompt() != null) ? 1 : 0;
+                for (int msgIdx = 0; msgIdx < requestMessages.size(); msgIdx++) {
+                    // Check the incoming request message.
+                    Message msgReq = requestMessages.get(msgIdx);
+                    if (msgIdx < conversation.size() && requestMessages.size() > 1) {
+                        Message msgSession = conversation.get(msgIdx + offsetSystem);
+                        if (!msgReq.role().name().equals(msgSession.role().name())) {
+                            throw new IllegalArgumentException(String.format("Unexpected role (%s) in message %d, expected role (%s)",
+                                    msgReq.role(), msgIdx + 1, msgSession.role().name()));
+                        }
+                        if (!msgReq.content().equals(msgSession.content())) {
+                            throw new IllegalArgumentException(String.format("Unexpected content (%s) in message %d, expected content (%s)",
+                                    msgReq.content(), msgIdx + 1, msgSession.content()));
+                        }
+                    } else if ("system".equals(msgReq.role().name())) {
+                            String systemPrompt = optionsGlobal.systemPrompt();
+                        if (systemPrompt != null && !systemPrompt.equals(msgReq.content())) {
+                            throw new IllegalArgumentException(String.format("Can't overwrite system-prompt in message %d", msgIdx + 1));
+                        }
+                    }
+                }
                 String systemMessage = null;
-                if (chatMessages.size() == 1 && ChatFormat.Role.USER.equals(chatMessages.get(0).role())
-                        && chatMessages.get(0).content().startsWith("/save:")) {
+                System.out.println("requestMessage: " + requestMessages);
+                if (requestMessages.getLast().role().equals(ChatFormat.Role.USER)
+                        && requestMessages.getLast().content().startsWith("/save:")) {
                     StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
                     try {
-                        systemMessage = stateCache.saveKVCache(chatMessages.get(0).content(), options.stateCacheFolder(), conversationTokens);
+                        systemMessage = stateCache.saveKVCache(requestMessages.getLast().content(), options.stateCacheFolder(),
+                                conversationTokens, conversation);
                     } catch (IllegalStateException e) {
                         System.err.println(e.getMessage());
+                    }
+                } else if (startPosition == 0 && options.stateCacheFolder() != null) {
+                    // Do we have a stored KV-cache?
+                    StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
+                    File fileGgsc = stateCache.searchConversationLog(options.stateCacheFolder(), requestMessages);
+                    if (fileGgsc != null) {
+                        try (InputStream is = Files.newInputStream(fileGgsc.toPath())) {
+                            ChatFormat chatFormat = model.chatFormat();
+                            final List<Integer> promptTokens = new ArrayList<>();
+                            requestMessages.stream().map(chatFormat::encodeMessage).forEach(promptTokens::addAll);
+                            List<Message> fileConversation = new ArrayList<>();
+                            startPosition = stateCache.deserialize(is, model.tokenizer(), fileConversation, promptTokens, options.echo());
+                            System.out.format("Start-Position via %s: %d%n", fileGgsc, startPosition);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
                     }
                 }
 
@@ -269,31 +264,48 @@ class LlamaHttpServer {
                 if (systemMessage != null) {
                     responseText = "#SYSTEM: " + systemMessage;
                 } else {
+                    List<ChatFormat.Message> newMessages;
+                    if (requestMessages.size() == 1) {
+                        newMessages = new ArrayList<>(requestMessages);
+                    } else {
+                        newMessages = requestMessages.subList(conversation.size(), requestMessages.size());
+                    }
+                    if (options.systemPrompt() != null && conversation.isEmpty() && !Role.SYSTEM.name().equals(requestMessages.getFirst().role().name())) {
+                        // We add a system-prompt.
+                        newMessages.add(0, new Message(Role.SYSTEM, options.systemPrompt()));
+                    }
                     ChatFormat chatFormat = model.chatFormat();
-                    chatMessages.stream().map(m -> String.format("[%s]> %s", m.role(), m.content())).forEach(System.out::println);
-                    chatMessages.stream().map(chatFormat::encodeMessage).map(chatFormat::toTokenDetails).forEach(conversationTokens::addAll);
+                    conversation.addAll(newMessages);
+                    newMessages.stream().forEach(m -> System.out.format("[%s]> %s%n", m.role(), m.content()));
+                    newMessages.stream().map(chatFormat::encodeMessage).map(chatFormat::toTokenDetails).forEach(conversationTokens::addAll);
                     conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""))));
                     //System.out.format("Tokens (start-pos %d): %s%n", startPosition, conversationTokens);
                     //System.out.println("Text: " + model.tokenizer().decode(conversationTokens).replace("\n", "\\n"));
                     Set<Integer> stopTokens = chatFormat.getStopTokens();
-    
+
+                    if (options.stateCacheFolder() != null) {
+                        // Check, if there is a ggsrc-file which contains the head of the conversation.
+                    }
+
                     if (options.stream()) {
                         // We use server-side events (SSE) for streaming.
                         exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
                         exchange.getResponseHeaders().add("Cache-Control", "no-cache");
                         exchange.sendResponseHeaders(200, 0);
                     }
-    
+
                     final Integer iStopToken = stopToken;
                     final List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
+                    StringBuilder sbResponse = new StringBuilder(200);
                     List<TokenDetails> responseTokens = Llama.generateTokens(model, httpSession.state(), startPosition, promptTokens, stopTokens, options.maxTokens(), sampler,
                             options.stateCache(), options.echo(), tokenDetail -> {
                         if (options.stream()) {
                             if (!model.tokenizer().isSpecialToken(tokenDetail.token()) || options.attentionTrace() > 0) {
                                 String sToken = model.tokenizer().decode(List.of(tokenDetail.token()));
                                 System.out.print(sToken);
+                                sbResponse.append(sToken);
 
-                                Map<String, Object> mapResponse = createResponse(model, reqCounter, format, tsCreation,
+                                Map<String, Object> mapResponse = createResponse(model, reqCounter, tsCreation,
                                         iStopToken, true, sToken, List.of(tokenDetail));
 
                                 var sbOut = new StringBuilder();
@@ -319,11 +331,13 @@ class LlamaHttpServer {
                     }
                     if (!options.stream()) {
                         responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
+                        sbResponse.append(responseText);
                         tokenDetails.addAll(responseTokens);
                         System.out.println(responseText);
                     }
+                    conversation.add(new Message(Role.ASSISTANT, sbResponse.toString()));
                 }
-                Map<String, Object> mapResponse = createResponse(model, reqCounter, format, tsCreation,
+                Map<String, Object> mapResponse = createResponse(model, reqCounter, tsCreation,
                         stopToken, options.stream(), responseText, tokenDetails);
                 if (stopToken == null) {
                     System.err.println("Ran out of context length...");
@@ -331,7 +345,7 @@ class LlamaHttpServer {
                 var sbOut = new StringBuilder();
                 LightweightJsonHandler.dumpJson(sbOut, mapResponse);
                 byte[] buf;
-                if (options.stream()) {
+                if (options.stream() && systemMessage == null) {
                     buf = String.format("data: %s\n\n", sbOut).getBytes(StandardCharsets.UTF_8);
                 } else {
                     buf = String.format("%s\n", sbOut).getBytes(StandardCharsets.UTF_8);
@@ -371,21 +385,11 @@ class LlamaHttpServer {
     }
 
     private static <S extends StateBase, W> Map<String, Object> createResponse(Llama<S, W> model, final AtomicLong reqCounter,
-            JsonFormat format, final long tsCreation, Integer stopToken,
+            final long tsCreation, Integer stopToken,
             boolean isDelta, String responseText, List<TokenDetails> tokenDetails) {
         Map<String, Object> mapResponse = new LinkedHashMap<>();
-        switch (format) {
-        case LLAMA_CPP:
-            mapResponse.put("content", responseText);
-            mapResponse.put("stop", Boolean.valueOf(stopToken != null));
-            break;
-        case OPENAI:
-            createResponseOpenAI(model, reqCounter, tsCreation, stopToken,
-                    mapResponse, isDelta, responseText, tokenDetails);
-            break;
-        default:
-            throw new IllegalArgumentException("format " + format);
-        }
+        createResponseOpenAI(model, reqCounter, tsCreation, stopToken,
+                mapResponse, isDelta, responseText, tokenDetails);
         return mapResponse;
     }
 

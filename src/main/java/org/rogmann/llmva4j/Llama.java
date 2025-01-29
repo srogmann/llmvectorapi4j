@@ -63,6 +63,7 @@ import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
 import org.rogmann.llmva4j.AttentionCollector.AttentionDetail;
+import org.rogmann.llmva4j.ChatFormat.Message;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
 
@@ -473,7 +474,8 @@ public abstract class Llama<S extends StateBase, W> {
                     BufferedInputStream bis = new BufferedInputStream(fis)) {
                 System.out.printf("Read cached tokens in %s%n", stateCachePath);
                 StateCache stateCache = new StateCache(model.configuration(), state);
-                startPosition = stateCache.deserialize(bis, model.tokenizer(), promptTokens, echo);
+                List<Message> conversationCache = new ArrayList<>();
+                startPosition = stateCache.deserialize(bis, model.tokenizer(), conversationCache, promptTokens, echo);
             } catch (IOException e) {
                 throw new RuntimeException("IO-exception while reading state-cache " + stateCachePath, e);
             }

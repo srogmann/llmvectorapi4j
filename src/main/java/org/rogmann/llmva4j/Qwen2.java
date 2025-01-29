@@ -44,9 +44,12 @@ public class Qwen2 {
     static void runInteractive(Qwen2Llama model, Sampler sampler, Options options) {
         State state = null;
         ChatFormat chatFormat = model.chatFormat();
+        List<ChatFormat.Message> conversation = new ArrayList<>();
         List<TokenDetails> conversationTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
-            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new Message(Role.SYSTEM, options.systemPrompt()))));
+            Message msgSystem = new Message(Role.SYSTEM, options.systemPrompt());
+            conversation.add(msgSystem);
+            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(msgSystem)));
         }
 
         int startPosition = 0;
@@ -66,24 +69,29 @@ public class Qwen2 {
                 if (userText.startsWith("/save:")) {
                     StateCache stateCache = new StateCache(model.configuration(), state);
                     try {
-                        String msg = stateCache.saveKVCache(userText, options.stateCacheFolder(), conversationTokens);
+                        String msg = stateCache.saveKVCache(userText, options.stateCacheFolder(), conversationTokens, conversation);
                         System.out.println(msg);
                     } catch (IllegalStateException e) {
                         System.err.println(e.getMessage());
                     }
                     continue;
                 }
-                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(new Message(Role.USER, userText))));
+                Message messageUser = new Message(Role.USER, userText);
+                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(messageUser)));
                 conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new Message(Role.ASSISTANT, ""))));
+                conversation.add(messageUser);
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
+                StringBuilder sbResponse = new StringBuilder(200);
                 List<TokenDetails> responseTokens = Llama.generateTokens(model, state, startPosition, promptTokens
                         , stopTokens, options.maxTokens(), sampler,
                         options.stateCache(), options.echo(), tokenDetail -> {
                     if (options.stream()) {
                         int tokenType = model.tokenizer().getTokenType(tokenDetail.token());
                         if (tokenType == 1 || tokenType == 6) {
-                            System.out.print(model.tokenizer().decode(List.of(tokenDetail.token())));
+                            String sToken = model.tokenizer().decode(List.of(tokenDetail.token()));
+                            System.out.print(sToken);
+                            sbResponse.append(sbResponse);
                         }
                     }
                 }, options.attentionTrace());
@@ -98,7 +106,9 @@ public class Qwen2 {
                 if (!options.stream()) {
                     String responseText = model.tokenizer().decode(responseTokens.stream().map(TokenDetails::token).toList());
                     System.out.println(responseText);
+                    sbResponse.append(responseText);
                 }
+                conversation.add(new Message(Role.ASSISTANT, sbResponse.toString()));
                 if (stopToken == null) {
                     System.err.println("Ran out of context length...");
                     break;
