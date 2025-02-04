@@ -18,6 +18,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.MessageWithTokens;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Configuration;
 import org.rogmann.llmva4j.Llama.StateBase;
@@ -40,7 +41,7 @@ public class StateCache {
     /** "GGSC": GGUF state cache */
     private static final int MAGIC_STATE_CACHE = 0x47475343;
     /** "Version 2 */
-    private static final int MAGIC_STATE_VERSION = 0x03;
+    private static final int MAGIC_STATE_VERSION = 0x04;
 
     private final Configuration config;
     private final int kvDim;    
@@ -58,7 +59,7 @@ public class StateCache {
         valueCache = state.valueCache;
     }
     
-    public String saveKVCache(String userText, Path stateCacheFolder, List<TokenDetails> tokens, List<Message> conversation) {
+    public String saveKVCache(String userText, Path stateCacheFolder, List<TokenDetails> tokens, List<MessageWithTokens> conversation) {
         Pattern pSaveName = Pattern.compile("/save:([A-Za-z0-9_][A-Za-z0-9_.-]+)");
         Matcher m = pSaveName.matcher(userText);
         if (!m.matches()) {
@@ -80,7 +81,7 @@ public class StateCache {
         return String.format("Wrote KV-cache (%d tokens) into file %s", tokens.size(), fileName);
     }
 
-    void serialize(OutputStream os, List<TokenDetails> tokens, List<Message> conversation) throws IOException {
+    void serialize(OutputStream os, List<TokenDetails> tokens, List<MessageWithTokens> conversation) throws IOException {
         if (!(keyCache[0] instanceof ArrayFloatTensor)) {
             throw new UnsupportedOperationException("keyCache has unexpected type: " + keyCache.getClass());
         }   
@@ -98,9 +99,13 @@ public class StateCache {
         assert (24 == sizes[0]);
         os.write(bb.array(), 0, 24);
         writeString(os, bb, config.modelGGUFName);
-        for (Message msg : conversation) {
+        for (MessageWithTokens msg : conversation) {
             writeString(os, bb, msg.role().name());
             writeString(os, bb, msg.content());
+            writeInt(os, bb, msg.tokens().size());
+            for (int token : msg.tokens()) {
+                writeInt(os, bb, token);
+            }
         }
 
         for (int i = 0; i < tokens.size(); i++) {
@@ -130,7 +135,7 @@ public class StateCache {
         DESERIALIZE_FILL_TOKENS
     }
 
-    public int deserialize(InputStream is, Tokenizer tokenizer, List<Message> conversation, List<Integer> tokens, boolean echo) throws IOException {
+    public int deserialize(InputStream is, Tokenizer tokenizer, List<MessageWithTokens> conversation, List<Integer> tokens, boolean echo) throws IOException {
         ByteBuffer bb = ByteBuffer.allocate(24);
         read(is, bb, 24);
         check(bb, 0, MAGIC_STATE_CACHE, "MAGIC_STATE_CACHE");
@@ -154,7 +159,12 @@ public class StateCache {
         for (int i = 0; i < numMessages; i++) {
             String roleName = readString(is, bb);
             String content = readString(is, bb);
-            conversation.add(new ChatFormat.Message(new Role(roleName), content));
+            int numTokens = readInt(is, bb);
+            List<Integer> msgTokens = new ArrayList<>();
+            for (int j = 0; j < numTokens; j++) {
+                msgTokens.add(readInt(is, bb));
+            }
+            conversation.add(new ChatFormat.MessageWithTokens(new Role(roleName), content, msgTokens));
         }
 
         if (tokens == null || tokenizer == null) {
@@ -207,34 +217,39 @@ public class StateCache {
         return numTokensRead;
     }
 
-    public File searchConversationLog(Path stateCacheFolder, List<Message> requestMessages) {
+    record StateCacheFile(File file, List<MessageWithTokens> messages) { }
+
+    public StateCacheFile searchConversationLog(Path stateCacheFolder, List<Message> requestMessages) {
         File[] files = stateCacheFolder.toFile().listFiles();
         if (files == null) {
             throw new IllegalArgumentException(String.format("State-cache folder (%s) is missing", stateCacheFolder));
         }
         int maxMsgs = 0;
-        File fileMaxMsgs = null;
+        StateCacheFile fileMaxMsgs = null;
         for (File file : files) {
             if (!file.isFile() || !file.getName().endsWith(".ggsc")) {
                 continue;
             }
-            List<Message> msgsFile = new ArrayList<>();
+            List<MessageWithTokens> msgsFile = new ArrayList<>();
             try (InputStream is = Files.newInputStream(file.toPath())) {
                 deserialize(is, null, msgsFile, null, false);
+            } catch (IllegalArgumentException e) {
+                System.err.println(String.format("Can't use state-cache (%s): %s", file.getName(), e));
+                continue;
             } catch (IOException e) {
                 System.err.println(String.format("IO-error while reading state-cache (%s): %s", file, e));
                 continue;
             }
             int numMsgsEqual = 0;
             for (int i = 0; i < msgsFile.size() && i < requestMessages.size(); i++) {
-                if (!msgsFile.get(i).equals(requestMessages.get(i))) {
+                if (!msgsFile.get(i).asMessage().equals(requestMessages.get(i))) {
                     break;
                 }
                 numMsgsEqual++;
             }
             if (numMsgsEqual > maxMsgs) {
                 maxMsgs = numMsgsEqual;
-                fileMaxMsgs = file;
+                fileMaxMsgs = new StateCacheFile(file, msgsFile);
             }
         }
         return fileMaxMsgs;
@@ -270,6 +285,11 @@ public class StateCache {
         }
     }
 
+    static int readInt(InputStream is, ByteBuffer bb) throws IOException {
+        read(is, bb, 4);
+        return bb.getInt(0);
+    }
+
     static String readString(InputStream is, ByteBuffer bb) throws IOException {
         read(is, bb, 4);
         int size = bb.getInt(0);
@@ -279,6 +299,11 @@ public class StateCache {
         final byte[] buf = new byte[size];
         read(is, ByteBuffer.wrap(buf), size);
         return new String(buf, StandardCharsets.UTF_8);
+    }
+
+    private static void writeInt(OutputStream os, ByteBuffer bb, int value) throws IOException {
+        bb.putInt(0, value);
+        os.write(bb.array(), 0, 4);
     }
 
     private static void writeString(OutputStream os, ByteBuffer bb, String text) throws IOException {

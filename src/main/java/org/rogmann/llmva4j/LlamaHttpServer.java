@@ -13,6 +13,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,10 +30,12 @@ import java.util.zip.GZIPInputStream;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionDetail;
 import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.MessageWithTokens;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
+import org.rogmann.llmva4j.StateCache.StateCacheFile;
 
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -43,7 +46,7 @@ import com.sun.net.httpserver.HttpServer;
  */
 class LlamaHttpServer {
     record LlamaHttpSession<S extends StateBase, W>(String sessionKey, Llama<S, W> model, Sampler sampler,
-            Options options, S state, List<TokenDetails> conversationTokens, List<ChatFormat.Message> conversation) { ; }
+            Options options, S state, List<TokenDetails> conversationTokens, List<MessageWithTokens> conversation) { ; }
 
     /**
      * Starts a HTTP-server to server requests in Llama.cpp-style.
@@ -196,7 +199,7 @@ class LlamaHttpServer {
                         System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
                                 temperature, topP, maxComplTokens, seed);
                         final List<TokenDetails> conversationTokens = new ArrayList<>();
-                        final List<ChatFormat.Message> conversation = new ArrayList<>();
+                        final List<MessageWithTokens> conversation = new ArrayList<>();
                         httpSession = new LlamaHttpSession<>(sessionKey, model, sampler, optionsReq, state, conversationTokens, conversation);
                         mapSessions.put(sessionKey, httpSession);
                     }
@@ -204,7 +207,7 @@ class LlamaHttpServer {
                 final String sessionKey = httpSession.sessionKey();
                 final Options options = httpSession.options();
                 final List<TokenDetails> conversationTokens = httpSession.conversationTokens();
-                final List<ChatFormat.Message> conversation = httpSession.conversation();
+                final List<MessageWithTokens> conversation = httpSession.conversation();
                 int startPosition = conversationTokens.size();
                 
                 int offsetSystem = (options.systemPrompt() != null) ? 1 : 0;
@@ -212,7 +215,7 @@ class LlamaHttpServer {
                     // Check the incoming request message.
                     Message msgReq = requestMessages.get(msgIdx);
                     if (msgIdx < conversation.size() && requestMessages.size() > 1) {
-                        Message msgSession = conversation.get(msgIdx + offsetSystem);
+                        MessageWithTokens msgSession = conversation.get(msgIdx + offsetSystem);
                         if (!msgReq.role().name().equals(msgSession.role().name())) {
                             throw new IllegalArgumentException(String.format("Unexpected role (%s) in message %d, expected role (%s)",
                                     msgReq.role(), msgIdx + 1, msgSession.role().name()));
@@ -229,7 +232,6 @@ class LlamaHttpServer {
                     }
                 }
                 String systemMessage = null;
-                System.out.println("requestMessage: " + requestMessages);
                 if (requestMessages.getLast().role().equals(ChatFormat.Role.USER)
                         && requestMessages.getLast().content().startsWith("/save:")) {
                     StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
@@ -242,15 +244,23 @@ class LlamaHttpServer {
                 } else if (startPosition == 0 && options.stateCacheFolder() != null) {
                     // Do we have a stored KV-cache?
                     StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
-                    File fileGgsc = stateCache.searchConversationLog(options.stateCacheFolder(), requestMessages);
+                    StateCacheFile fileGgsc = stateCache.searchConversationLog(options.stateCacheFolder(), requestMessages);
                     if (fileGgsc != null) {
-                        try (InputStream is = Files.newInputStream(fileGgsc.toPath())) {
+                        List<MessageWithTokens> msgsFile = fileGgsc.messages();
+                        try (InputStream is = Files.newInputStream(fileGgsc.file().toPath())) {
                             ChatFormat chatFormat = model.chatFormat();
                             final List<Integer> promptTokens = new ArrayList<>();
-                            requestMessages.stream().map(chatFormat::encodeMessage).forEach(promptTokens::addAll);
-                            List<Message> fileConversation = new ArrayList<>();
+                            final int numMsgsToCopy = Math.min(msgsFile.size(), requestMessages.size());
+                            // We can read the tokens and KV-caches of the first numMsgsToCopy.size() messages.
+                            msgsFile.stream().limit(numMsgsToCopy).map(MessageWithTokens::tokens).forEach(promptTokens::addAll);
+                            requestMessages.stream().skip(numMsgsToCopy).map(chatFormat::encodeMessage).forEach(promptTokens::addAll);
+                            List<MessageWithTokens> fileConversation = new ArrayList<>();
+                            String statTokens = Arrays.toString(msgsFile.stream().map(m -> String.format("%1.1s%d[%8.8s...]",
+                                    m.role().name(), m.tokens().size(), LightweightJsonHandler.escapeString(m.content()))).toArray());
                             startPosition = stateCache.deserialize(is, model.tokenizer(), fileConversation, promptTokens, options.echo());
-                            System.out.format("Start-Position via %s: %d%n", fileGgsc, startPosition);
+                            int nMsgs = fileGgsc.messages().size();
+                            System.out.format("// Start-position via %s (%d %s, %s): %d%n", fileGgsc.file().getName(),
+                                    nMsgs, nMsgs == 1 ? "msg" : "msgs", statTokens, startPosition);
                         } catch (IOException e) {
                             e.printStackTrace();
                         }
@@ -275,17 +285,18 @@ class LlamaHttpServer {
                         newMessages.add(0, new Message(Role.SYSTEM, options.systemPrompt()));
                     }
                     ChatFormat chatFormat = model.chatFormat();
-                    conversation.addAll(newMessages);
                     newMessages.stream().forEach(m -> System.out.format("[%s]> %s%n", m.role(), m.content()));
-                    newMessages.stream().map(chatFormat::encodeMessage).map(chatFormat::toTokenDetails).forEach(conversationTokens::addAll);
-                    conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""))));
+                    for (Message msg : newMessages) {
+                            List<Integer> msgTokens = chatFormat.encodeMessage(msg);
+                            conversationTokens.addAll(chatFormat.toTokenDetails(msgTokens));
+                            conversation.add(new MessageWithTokens(msg.role(), msg.content(), msgTokens));
+                    }
+
+                    List<TokenDetails> tokensAssistantHeader = chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")));
+                    conversationTokens.addAll(tokensAssistantHeader);
                     //System.out.format("Tokens (start-pos %d): %s%n", startPosition, conversationTokens);
                     //System.out.println("Text: " + model.tokenizer().decode(conversationTokens).replace("\n", "\\n"));
                     Set<Integer> stopTokens = chatFormat.getStopTokens();
-
-                    if (options.stateCacheFolder() != null) {
-                        // Check, if there is a ggsrc-file which contains the head of the conversation.
-                    }
 
                     if (options.stream()) {
                         // We use server-side events (SSE) for streaming.
@@ -323,6 +334,9 @@ class LlamaHttpServer {
                         }
                     }, options.attentionTrace());
                     // Include stop token in the prompt history, but not in the response displayed to the user.
+                    List<Integer> tokensNew = new ArrayList<>();
+                    tokensAssistantHeader.stream().map(TokenDetails::token).forEach(tokensNew::add);
+                    responseTokens.stream().map(TokenDetails::token).forEach(tokensNew::add);
                     conversationTokens.addAll(responseTokens);
                     startPosition = conversationTokens.size();
                     if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
@@ -335,7 +349,7 @@ class LlamaHttpServer {
                         tokenDetails.addAll(responseTokens);
                         System.out.println(responseText);
                     }
-                    conversation.add(new Message(Role.ASSISTANT, sbResponse.toString()));
+                    conversation.add(new MessageWithTokens(Role.ASSISTANT, sbResponse.toString(), tokensNew));
                 }
                 Map<String, Object> mapResponse = createResponse(model, reqCounter, tsCreation,
                         stopToken, options.stream(), responseText, tokenDetails);

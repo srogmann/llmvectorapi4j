@@ -29,6 +29,7 @@ import java.util.stream.IntStream;
 import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
 import org.rogmann.llmva4j.ChatFormat.ChatTokens;
 import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.MessageWithTokens;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.StateBase;
@@ -44,12 +45,13 @@ public class Qwen2 {
     static void runInteractive(Qwen2Llama model, Sampler sampler, Options options) {
         State state = null;
         ChatFormat chatFormat = model.chatFormat();
-        List<ChatFormat.Message> conversation = new ArrayList<>();
+        List<MessageWithTokens> conversation = new ArrayList<>();
         List<TokenDetails> conversationTokens = new ArrayList<>();
         if (options.systemPrompt() != null) {
             Message msgSystem = new Message(Role.SYSTEM, options.systemPrompt());
-            conversation.add(msgSystem);
-            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(msgSystem)));
+            List<Integer> tokens = chatFormat.encodeMessage(msgSystem);
+            conversation.add(new MessageWithTokens(msgSystem.role(), msgSystem.content(), tokens));
+            conversationTokens.addAll(chatFormat.toTokenDetails(tokens));
         }
 
         int startPosition = 0;
@@ -76,13 +78,16 @@ public class Qwen2 {
                     }
                     continue;
                 }
-                Message messageUser = new Message(Role.USER, userText);
-                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(messageUser)));
-                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new Message(Role.ASSISTANT, ""))));
-                conversation.add(messageUser);
+                Message msgUser = new Message(Role.USER, userText);
+                List<Integer> tokensUser = chatFormat.encodeMessage(msgUser);
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensUser));
+                List<Integer> tokensHeader = chatFormat.encodeHeader(new Message(Role.ASSISTANT, ""));
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensHeader));
+                conversation.add(new MessageWithTokens(msgUser.role(), msgUser.content(), tokensUser));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
                 StringBuilder sbResponse = new StringBuilder(200);
+                List<Integer> tokensResponse = new ArrayList<>(tokensHeader);
                 List<TokenDetails> responseTokens = Llama.generateTokens(model, state, startPosition, promptTokens
                         , stopTokens, options.maxTokens(), sampler,
                         options.stateCache(), options.echo(), tokenDetail -> {
@@ -97,6 +102,7 @@ public class Qwen2 {
                 }, options.attentionTrace());
                 // Include stop token in the prompt history, but not in the response displayed to the user.
                 conversationTokens.addAll(responseTokens);
+                responseTokens.stream().mapToInt(TokenDetails::token).forEach(tokensResponse::add);
                 startPosition = conversationTokens.size();
                 Integer stopToken = null;
                 if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
@@ -108,7 +114,8 @@ public class Qwen2 {
                     System.out.println(responseText);
                     sbResponse.append(responseText);
                 }
-                conversation.add(new Message(Role.ASSISTANT, sbResponse.toString()));
+
+                conversation.add(new MessageWithTokens(Role.ASSISTANT, sbResponse.toString(), tokensResponse));
                 if (stopToken == null) {
                     System.err.println("Ran out of context length...");
                     break;
@@ -244,7 +251,7 @@ final class Qwen2ModelLoader {
             );
 
             ChatTokens chatTokens = isDeepSeekR1DistillQwen ?
-                    new ChatTokens( "<｜end▁of▁sentence｜>", "", "", "<｜end▁of▁sentence｜>") :
+                    new ChatTokens( "<｜begin▁of▁sentence｜>", "", "", "<｜end▁of▁sentence｜>") :
                     new ChatTokens( "<|im_start|>", "<|im_end|>", "", "<|end_of_text|>");
             return new Qwen2Llama(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw, chatTokens);
         }

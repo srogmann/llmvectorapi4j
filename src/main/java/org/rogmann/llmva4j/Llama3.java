@@ -12,6 +12,7 @@ import java.util.Set;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
 import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.MessageWithTokens;
 import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.State;
 import org.rogmann.llmva4j.Llama.Weights;
@@ -31,13 +32,14 @@ public class Llama3 extends Llama<State, Weights> {
     static void runInteractive(Llama3 model, Sampler sampler, Options options) {
         Llama.State state = null;
         List<TokenDetails> conversationTokens = new ArrayList<>();
-        List<Message> conversation = new ArrayList<>();
+        List<MessageWithTokens> conversation = new ArrayList<>();
         ChatFormat chatFormat = model.chatFormat();
         conversationTokens.addAll(chatFormat.toTokenDetails(Collections.singletonList(chatFormat.beginOfText)));
         if (options.systemPrompt() != null) {
-            Message msgSystem = new ChatFormat.Message(ChatFormat.Role.SYSTEM, options.systemPrompt());
-            conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(msgSystem)));
-            conversation.add(msgSystem);
+            Message msgSystem = new Message(Role.SYSTEM, options.systemPrompt());
+            List<Integer> tokens = chatFormat.encodeMessage(msgSystem);
+            conversation.add(new MessageWithTokens(msgSystem.role(), msgSystem.content(), tokens));
+            conversationTokens.addAll(chatFormat.toTokenDetails(tokens));
         }
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
@@ -69,12 +71,15 @@ public class Llama3 extends Llama<State, Weights> {
                     state = model.createNewState(Llama.BATCH_SIZE);
                 }
                 Message msgUser = new ChatFormat.Message(ChatFormat.Role.USER, userText);
-                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeMessage(msgUser)));
-                conversationTokens.addAll(chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, ""))));
-                conversation.add(msgUser);
+                List<Integer> tokensUser = chatFormat.encodeMessage(msgUser);
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensUser));
+                List<Integer> tokensHeader = chatFormat.encodeHeader(new Message(Role.ASSISTANT, ""));
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensHeader));
+                conversation.add(new MessageWithTokens(msgUser.role(), msgUser.content(), tokensUser));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
                 StringBuilder sbResponse = new StringBuilder(200);
+                List<Integer> tokensResponse = new ArrayList<>(tokensHeader);
                 List<TokenDetails> responseTokens = generateTokens(model, state, startPosition, promptTokens, stopTokens, options.maxTokens(), sampler,
                         options.stateCache(), options.echo(), tokenDetail -> {
                     if (options.stream()) {
@@ -87,6 +92,7 @@ public class Llama3 extends Llama<State, Weights> {
                 }, options.attentionTrace());
                 // Include stop token in the prompt history, but not in the response displayed to the user.
                 conversationTokens.addAll(responseTokens);
+                responseTokens.stream().mapToInt(TokenDetails::token).forEach(tokensResponse::add);
                 startPosition = conversationTokens.size();
                 Integer stopToken = null;
                 if (!responseTokens.isEmpty() && stopTokens.contains(responseTokens.getLast().token())) {
@@ -98,7 +104,7 @@ public class Llama3 extends Llama<State, Weights> {
                     System.out.println(responseText);
                     sbResponse.append(responseText);
                 }
-                conversation.add(new Message(Role.ASSISTANT, sbResponse.toString()));
+                conversation.add(new MessageWithTokens(Role.ASSISTANT, sbResponse.toString(), tokensResponse));
                 if (stopToken == null) {
                     System.err.println("Ran out of context length...");
                     break;

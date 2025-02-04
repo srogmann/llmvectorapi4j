@@ -63,7 +63,7 @@ import java.util.stream.Stream;
 
 import org.rogmann.llmva4j.AttentionCollector.AttentionConsumer;
 import org.rogmann.llmva4j.AttentionCollector.AttentionDetail;
-import org.rogmann.llmva4j.ChatFormat.Message;
+import org.rogmann.llmva4j.ChatFormat.MessageWithTokens;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
 
@@ -469,12 +469,12 @@ public abstract class Llama<S extends StateBase, W> {
         };
 
         int startPositionGen = startPosition;
-        if (startPositionGen == 0 && stateCachePath != null) {
+        if (startPositionGen == 0 && stateCachePath != null && stateCachePath.toFile().isFile()) {
             try (FileInputStream fis = new FileInputStream(stateCachePath.toFile());
                     BufferedInputStream bis = new BufferedInputStream(fis)) {
                 System.out.printf("Read cached tokens in %s%n", stateCachePath);
                 StateCache stateCache = new StateCache(model.configuration(), state);
-                List<Message> conversationCache = new ArrayList<>();
+                List<MessageWithTokens> conversationCache = new ArrayList<>();
                 startPosition = stateCache.deserialize(bis, model.tokenizer(), conversationCache, promptTokens, echo);
             } catch (IOException e) {
                 throw new RuntimeException("IO-exception while reading state-cache " + stateCachePath, e);
@@ -2234,6 +2234,13 @@ abstract class ChatFormat {
     }
 
     public record Message(ChatFormat.Role role, String content) {
+    }
+
+    public record MessageWithTokens(ChatFormat.Role role, String content, List<Integer> tokens) {
+
+        public Message asMessage() {
+            return new Message(role, content);
+        }
     }
 
     public record Role(String name) {
