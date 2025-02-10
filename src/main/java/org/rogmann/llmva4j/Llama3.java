@@ -34,12 +34,12 @@ public class Llama3 extends Llama<State, Weights> {
         List<TokenDetails> conversationTokens = new ArrayList<>();
         List<MessageWithTokens> conversation = new ArrayList<>();
         ChatFormat chatFormat = model.chatFormat();
-        conversationTokens.addAll(chatFormat.toTokenDetails(Collections.singletonList(chatFormat.beginOfText)));
+        conversationTokens.addAll(chatFormat.toTokenDetails(Collections.singletonList(chatFormat.beginOfText), conversationTokens.size()));
         if (options.systemPrompt() != null) {
             Message msgSystem = new Message(Role.SYSTEM, options.systemPrompt());
             List<Integer> tokens = chatFormat.encodeMessage(msgSystem);
             conversation.add(new MessageWithTokens(msgSystem.role(), msgSystem.content(), tokens));
-            conversationTokens.addAll(chatFormat.toTokenDetails(tokens));
+            conversationTokens.addAll(chatFormat.toTokenDetails(tokens, conversationTokens.size()));
         }
         int startPosition = 0;
         try (Scanner in = new Scanner(System.in)) {
@@ -72,9 +72,9 @@ public class Llama3 extends Llama<State, Weights> {
                 }
                 Message msgUser = new ChatFormat.Message(ChatFormat.Role.USER, userText);
                 List<Integer> tokensUser = chatFormat.encodeMessage(msgUser);
-                conversationTokens.addAll(chatFormat.toTokenDetails(tokensUser));
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensUser, conversationTokens.size()));
                 List<Integer> tokensHeader = chatFormat.encodeHeader(new Message(Role.ASSISTANT, ""));
-                conversationTokens.addAll(chatFormat.toTokenDetails(tokensHeader));
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensHeader, conversationTokens.size()));
                 conversation.add(new MessageWithTokens(msgUser.role(), msgUser.content(), tokensUser));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();

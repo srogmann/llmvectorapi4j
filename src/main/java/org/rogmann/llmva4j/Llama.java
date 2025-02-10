@@ -521,6 +521,8 @@ public abstract class Llama<S extends StateBase, W> {
                     continue;
                 }
                 startGen = System.nanoTime();
+                position++; // The current logit belongs to the next position
+                currPosition += nTokens;
             } else {
                 model.forward(state, new int[] { token }, position, true, attentionConsumer);
             }
@@ -532,7 +534,7 @@ public abstract class Llama<S extends StateBase, W> {
             // The UTF-8-buffer might shift the UTF-8-bytes between tokens.
             byte[] bufToken = model.tokenizer().decode(List.of(nextToken)).getBytes(StandardCharsets.UTF_8);
             final TokenDetails tokenDetail = new TokenDetails(currPosition, nextToken, !isPrompt,
-                    isPrompt ? 0.0f : state.logits.getFloat(nextToken), bufToken, mapAttIdcs.get(position));
+                    isPrompt ? 0.0f : state.logits.getFloat(nextToken), bufToken, mapAttIdcs.get(currPosition));
             generatedTokens.add(tokenDetail);
             allTokens.add(tokenDetail.token());
                     
@@ -2209,11 +2211,11 @@ abstract class ChatFormat {
         return tokens;
     }
 
-    public List<TokenDetails> toTokenDetails(List<Integer> tokens) {
+    public List<TokenDetails> toTokenDetails(List<Integer> tokens, int startOffset) {
         List<TokenDetails> tokenDetails = new ArrayList<>();
         for (int i = 0; i < tokens.size(); i++) {
             int token = tokens.get(i);
-            tokenDetails.add(new TokenDetails(i, token, false,
+            tokenDetails.add(new TokenDetails(startOffset + i, token, false,
                     0.0f, tokenizer.decode(List.of(token)).getBytes(StandardCharsets.UTF_8),
                     null));
         }

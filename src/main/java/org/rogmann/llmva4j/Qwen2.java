@@ -51,7 +51,7 @@ public class Qwen2 {
             Message msgSystem = new Message(Role.SYSTEM, options.systemPrompt());
             List<Integer> tokens = chatFormat.encodeMessage(msgSystem);
             conversation.add(new MessageWithTokens(msgSystem.role(), msgSystem.content(), tokens));
-            conversationTokens.addAll(chatFormat.toTokenDetails(tokens));
+            conversationTokens.addAll(chatFormat.toTokenDetails(tokens, conversationTokens.size()));
         }
 
         int startPosition = 0;
@@ -80,9 +80,9 @@ public class Qwen2 {
                 }
                 Message msgUser = new Message(Role.USER, userText);
                 List<Integer> tokensUser = chatFormat.encodeMessage(msgUser);
-                conversationTokens.addAll(chatFormat.toTokenDetails(tokensUser));
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensUser, conversationTokens.size()));
                 List<Integer> tokensHeader = chatFormat.encodeHeader(new Message(Role.ASSISTANT, ""));
-                conversationTokens.addAll(chatFormat.toTokenDetails(tokensHeader));
+                conversationTokens.addAll(chatFormat.toTokenDetails(tokensHeader, conversationTokens.size()));
                 conversation.add(new MessageWithTokens(msgUser.role(), msgUser.content(), tokensUser));
                 Set<Integer> stopTokens = chatFormat.getStopTokens();
                 List<Integer> promptTokens = conversationTokens.subList(startPosition, conversationTokens.size()).stream().map(TokenDetails::token).toList();
