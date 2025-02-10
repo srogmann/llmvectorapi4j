@@ -366,6 +366,9 @@ class LightweightJsonHandler {
                 else if (c == '/') {
                     ;
                 }
+                else if (c == '\\') {
+                    ;
+                }
                 else if (c == 'u') {
                     char[] cBuf = new char[4];
                     for (int i = 0; i < 4; i++) {
