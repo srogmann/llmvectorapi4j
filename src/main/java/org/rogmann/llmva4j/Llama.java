@@ -84,6 +84,19 @@ public abstract class Llama<S extends StateBase, W> {
     private final W weights;
     private final ChatFormat chatFormat;
 
+    public static void main(String[] args) throws IOException {
+        Options options = Options.parseOptions(args);
+        Path modelPath = options.modelPath();
+        String sPath = modelPath.getFileName().toString().toLowerCase();
+        if (sPath.contains("qwen")) {
+            Qwen2.main(args);
+        } else if (sPath.contains("phi")) {
+            Phi3.main(args);
+        } else {
+            Llama3.main(args);
+        }
+    }
+
     public Llama(String modelName, Configuration configuration, Tokenizer tokenizer, W weights, ChatFormat chatFormat) {
         this.modelName = modelName;
         this.configuration = configuration;
