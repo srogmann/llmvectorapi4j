@@ -349,8 +349,8 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
         async function readStream(reader, decoder) {
             const container = document.getElementById('token-container');
             if (isStreaming) {
-                container.innerHTML = ''; // Clear previous content only at the start of streaming
-                tokenInfo.length = 0; // Clear previous token info only at the start of streaming
+                //container.innerHTML = ''; // Clear previous content only at the start of streaming
+                //tokenInfo.length = 0; // Clear previous token info only at the start of streaming
                 isStreaming = false; // Reset streaming flag after clearing
             }
 

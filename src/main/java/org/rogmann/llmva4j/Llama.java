@@ -434,6 +434,7 @@ public abstract class Llama<S extends StateBase, W> {
             maxTokens = model.configuration().contextLength;
         }
         
+        // The attentions mapAttIdcs[pos] at index pos are inferred to the token at index pos + 1.
         final ConcurrentMap<Integer, List<AttentionDetail>> mapAttIdcs = new ConcurrentHashMap<>();
         Configuration config = model.configuration();
         final int headSize = config.headSize;
@@ -461,8 +462,7 @@ public abstract class Llama<S extends StateBase, W> {
                     partValueLen = (float) (Math.abs(a) * Math.sqrt(partValueLen));
                     return new AttentionDetail(position, layer, head, idx,  a, partValueLen);
                 })
-                .filter(det -> det.positionRef() < det.position())
-                .filter(det -> det.positionRef() > 0)
+                .filter(det -> det.positionRef() > 0) // ignore attention to first BOS
                 .filter(attentionFilter)
                 .sorted(Comparator.comparing(AttentionDetail::partValueLen).reversed().thenComparing(AttentionDetail::layer))
                 .limit(attentionLimit).forEach(attDetails::add);
@@ -485,10 +485,12 @@ public abstract class Llama<S extends StateBase, W> {
         int token = state.latestToken; // BOS?
         int nextToken;
         int promptIndex = 0;
+        //System.out.format("# generate: startPosition=%d, promptSize=%d%n", startPosition, promptTokens.size());
         for (int position = startPosition; position < maxTokens; ++position) {
-            int currPosition = position;
-            final boolean isPrompt = promptIndex < promptTokens.size();
-            if (isPrompt) {
+            List<AttentionDetail> att;
+            if (promptIndex < promptTokens.size()) {
+                // The prompt has promptTokens.size() starting at startPosition, the tokens are known.
+                // The inference of the last prompt-token gives us the first response token.
                 final int nTokens = Math.min(promptTokens.size() - promptIndex, state.batchsize);
                 final int[] tokens = new int[nTokens];
                 for (int i = 0; i < nTokens; i++) {
@@ -510,8 +512,9 @@ public abstract class Llama<S extends StateBase, W> {
                     for (int i = 0; i < nTokens; i++) {
                         int iToken = tokens[i];
                         byte[] bufToken = model.tokenizer().decodeOneToken(iToken).getBytes(StandardCharsets.UTF_8);
+                        // The attentions of a prompt token at position idx are in mapAttIcs[idx - 1].
                         final TokenDetails tokenDetail = new TokenDetails(position + i, iToken, false,
-                                0.0f, bufToken, mapAttIdcs.get(position + i));
+                                0.0f, bufToken, mapAttIdcs.get(position + i - 1));
                         onTokenGenerated.accept(tokenDetail);
                     }
                 }
@@ -520,11 +523,13 @@ public abstract class Llama<S extends StateBase, W> {
                 if (promptIndex < promptTokens.size()) {
                     continue;
                 }
+                // We have reached the last prompt token and computed the first response-token.
                 startGen = System.nanoTime();
                 position++; // The current logit belongs to the next position
-                currPosition += nTokens;
+                att = mapAttIdcs.get(position - 1);
             } else {
                 model.forward(state, new int[] { token }, position, true, attentionConsumer);
+                att = mapAttIdcs.get(position);
             }
             nextToken = sampler.sampleToken(state.logits);
             if (echo) {
@@ -533,8 +538,8 @@ public abstract class Llama<S extends StateBase, W> {
             }
             // The UTF-8-buffer might shift the UTF-8-bytes between tokens.
             byte[] bufToken = model.tokenizer().decode(List.of(nextToken)).getBytes(StandardCharsets.UTF_8);
-            final TokenDetails tokenDetail = new TokenDetails(currPosition, nextToken, !isPrompt,
-                    isPrompt ? 0.0f : state.logits.getFloat(nextToken), bufToken, mapAttIdcs.get(currPosition));
+            final TokenDetails tokenDetail = new TokenDetails(position, nextToken, true,
+                    state.logits.getFloat(nextToken), bufToken, att);
             generatedTokens.add(tokenDetail);
             allTokens.add(tokenDetail.token());
                     
