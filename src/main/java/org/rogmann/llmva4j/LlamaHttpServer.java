@@ -39,6 +39,7 @@ import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
 import org.rogmann.llmva4j.StateCache.StateCacheFile;
 
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
@@ -70,46 +71,7 @@ class LlamaHttpServer {
         HttpHandler handler = exchange -> {
             System.out.format("httpserver: request of %s by %s%n", exchange.getRequestURI(), exchange.getRemoteAddress());
             if ("GET".equals(exchange.getRequestMethod())) {
-                String pathReq = exchange.getRequestURI().getPath();
-                String pathBase = optionsGlobal.serverPath();
-                if ("/".equals(pathReq)) {
-                    pathReq = "index.html";
-                }
-                if (!Pattern.matches("/?[A-Za-z0-9_.-]*", pathReq)) {
-                    System.err.format("Invalid path: %s%n", pathReq);
-                    byte[] buf = "Invalid path".getBytes(StandardCharsets.UTF_8);
-                    exchange.setAttribute("Content-Type", "application/html");
-                    exchange.sendResponseHeaders(404, buf.length);
-                    exchange.getResponseBody().write(buf);
-                    exchange.close();
-                    return;
-                }
-                final File fileCheckGz = new File(pathBase, pathReq + ".gz");
-                final File file = fileCheckGz.isFile() ? fileCheckGz : new File(pathBase, pathReq);
-                if (!file.isFile()) {
-                    System.err.println("No such file: " + file);
-                    byte[] buf = "File not found".getBytes(StandardCharsets.UTF_8);
-                    exchange.setAttribute("Content-Type", "application/html");
-                    exchange.sendResponseHeaders(404, buf.length);
-                    exchange.getResponseBody().write(buf);
-                    exchange.close();
-                    return;
-                }
-                exchange.getRequestBody().close();
-                String contentType = switch (pathReq.replaceFirst(".*[.]", "")) {
-                    case "html" -> "text/html";
-                    case "css" -> "text/css";
-                    case "js", "mjs" -> "text/javascript";
-                    case "ico" -> "image";
-                    default -> "application/octet-stream";
-                };
-                exchange.getResponseHeaders().set("Content-type", contentType);
-                final byte[] buf = (file == fileCheckGz) ? readGzip(file) : Files.readAllBytes(file.toPath());
-                exchange.sendResponseHeaders(200, buf.length);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(buf);
-                }
-                exchange.close();
+                processGetRequest(exchange, optionsGlobal);
                 return;
             }
             List<Message> requestMessages = new ArrayList<>();
@@ -166,46 +128,8 @@ class LlamaHttpServer {
             }
 
             try {
-                List<String> lCookies = exchange.getRequestHeaders().get("Cookie");
-                String cookie = (lCookies != null) ? lCookies.get(0) : null;
-                LlamaHttpSession<S, W> httpSession = null;
-                {
-                    String sessionKey = null;
-                    if (cookie != null && cookie.startsWith("LLAMA_SESS_ID=")) {
-                        sessionKey = cookie.replaceFirst("LLAMA_SESS_ID=([^;]*).*", "$1");
-                        httpSession = mapSessions.get(sessionKey);
-                        if (httpSession == null) {
-                            System.err.format("Llama-HTTP-session (%s) doesn't exist (any more)%n", sessionKey);
-                            sessionKey = null;
-                        }
-                    }
-                    if (httpSession == null) {
-                        // We build a new HTTP-session.
-                        final S state = model.createNewState(Llama.BATCH_SIZE);
-                        sessionKey = "SESS-" + reqCounter.get() + "-" + UUID.randomUUID().toString();
-                        exchange.getResponseHeaders().add("Set-Cookie", "LLAMA_SESS_ID=" + sessionKey + "; path=/; SameSite=Strict");
-
-                        float temperature = LightweightJsonHandler.readFloat(mapRequest, "temperature", optionsGlobal.temperature());
-                        float topP = LightweightJsonHandler.readFloat(mapRequest, "top_p", optionsGlobal.topp());
-                        int maxLlamaCpp = LightweightJsonHandler.readInt(mapRequest, "n_predict", optionsGlobal.maxTokens());
-                        int maxTokensOld = LightweightJsonHandler.readInt(mapRequest, "max_tokens", maxLlamaCpp);
-                        int maxComplTokens = LightweightJsonHandler.readInt(mapRequest, "max_completion_tokens", maxTokensOld);
-                        long seed = LightweightJsonHandler.readLong(mapRequest, "seed", optionsGlobal.seed());
-                        boolean stream = LightweightJsonHandler.readBoolean(mapRequest, "stream", optionsGlobal.stream());
-                        Options optionsReq = new Options(optionsGlobal.modelPath(), "", optionsGlobal.systemPrompt(), true,
-                                temperature, topP, seed, maxComplTokens, stream,
-                                optionsGlobal.echo(),
-                                optionsGlobal.serverHost(), optionsGlobal.serverPort(), optionsGlobal.serverPath(),
-                                optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(), optionsGlobal.stateCacheAutoSavePrefix(),
-                                optionsGlobal.attentionTrace());
-                        System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
-                                temperature, topP, maxComplTokens, seed);
-                        final List<TokenDetails> conversationTokens = new ArrayList<>();
-                        final List<MessageWithTokens> conversation = new ArrayList<>();
-                        httpSession = new LlamaHttpSession<>(sessionKey, model, sampler, optionsReq, state, conversationTokens, conversation);
-                        mapSessions.put(sessionKey, httpSession);
-                    }
-                }
+                LlamaHttpSession<S, W> httpSession = getOrCreateHttpSession(exchange, model, sampler, optionsGlobal,
+                        mapSessions, mapRequest, reqCounter);
                 final String sessionKey = httpSession.sessionKey();
                 final Options options = httpSession.options();
                 final List<TokenDetails> conversationTokens = httpSession.conversationTokens();
@@ -233,11 +157,6 @@ class LlamaHttpServer {
                 } else if (requestMessages.isEmpty()) {
                     responseText = "#SYSTEM: no request message";
                 } else {
-                    if (options.systemPrompt() != null && conversation.isEmpty() && !Role.SYSTEM.name().equals(requestMessages.getFirst().role().name())) {
-                        // We add a system-prompt.
-                        requestMessages.add(0, new Message(Role.SYSTEM, options.systemPrompt()));
-                    }
-
                     if (options.stream()) {
                         // We use server-side events (SSE) for streaming.
                         exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
@@ -245,78 +164,10 @@ class LlamaHttpServer {
                         exchange.sendResponseHeaders(200, 0);
                     }
 
-                    // Does the current KV Cache fit the message list in the request?
-                    List<MessageWithTokens> listMsgsKnown = IntStream.range(0, Math.min(requestMessages.size() - 1, conversation.size()))
-                            .mapToObj(idx -> new Pair<>(requestMessages.get(idx), conversation.get(idx)))
-                            .takeWhile(p -> p.first().role().equals(p.second().role())
-                                    && p.first().content().equals(p.second().content()))
-                            .map(p -> p.second()).toList();
+                    startPosition = processRequestChat(httpSession, model, options, requestMessages, startPosition,
+                            conversation, conversationTokens);
+
                     ChatFormat chatFormat = model.chatFormat();
-                    boolean isChatModified = false;
-                    if (listMsgsKnown.isEmpty() && options.stateCacheFolder() != null) {
-                        // Do we have a stored KV-cache?
-                        StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
-                        StateCacheFile fileGgsc = stateCache.searchConversationLog(options.stateCacheFolder(), requestMessages);
-                        if (fileGgsc != null) {
-                            List<MessageWithTokens> msgsFile = fileGgsc.messages();
-                            final int numMsgsToCheck = Math.min(msgsFile.size(), requestMessages.size());
-                            List<MessageWithTokens> msgsFileKnown = IntStream.range(0, numMsgsToCheck)
-                                    .mapToObj(idx -> new Pair<>(requestMessages.get(idx), msgsFile.get(idx)))
-                                    .takeWhile(p -> p.first().role().equals(p.second().role())
-                                            && p.first().content().equals(p.second().content()))
-                                    .map(p -> p.second()).toList();
-                            try (InputStream is = Files.newInputStream(fileGgsc.file().toPath())) {
-                                final List<Integer> reqTokens = new ArrayList<>();
-                                // We can read the tokens and KV-caches of the first numMsgsToCopy.size() messages.
-                                conversation.clear();
-                                conversationTokens.clear();
-                                AtomicInteger refPosition = new AtomicInteger();
-                                // We take tokens from msgsFile.
-                                msgsFileKnown.stream().limit(numMsgsToCheck).map(MessageWithTokens::tokens).forEach(tokens -> tokens.stream().forEach(token -> {
-                                    reqTokens.add(token);
-                                    conversationTokens.add(new TokenDetails(refPosition.getAndIncrement(), token, false, 0f,
-                                            model.tokenizer.decodeOneToken(token).getBytes(StandardCharsets.UTF_8), null));
-                                }));
-                                String statTokens = Arrays.toString(msgsFileKnown.stream().map(m -> String.format("%1.1s%d[%8.8s...]",
-                                        m.role().name(), m.tokens().size(), LightweightJsonHandler.escapeString(m.content()))).toArray());
-                                startPosition = stateCache.deserialize(is, model.tokenizer(), conversation, reqTokens, options.echo());
-                                // How many messages can we copy from KV-cache?
-                                int numMsgsToCopy = msgsFileKnown.size();
-                                System.out.format("// Start-position via %s is %d (%d %s, %s)%n", fileGgsc.file().getName(), startPosition,
-                                        numMsgsToCopy, numMsgsToCopy == 1 ? "msg" : "msgs", statTokens);
-                                listMsgsKnown = msgsFileKnown.subList(0, numMsgsToCopy);
-                                isChatModified = true;
-                            } catch (IOException e) {
-                                throw new RuntimeException("IO-error while reading " + fileGgsc, e);
-                            }
-                        }
-                    } else if (listMsgsKnown.size() < conversation.size()) {
-                        //System.out.println("listKnown: " + listMsgsKnown);
-                        //System.out.println("conv: " + conversation);
-                        //System.out.println("Req: " + requestMessages);
-                        int startPositionOld = startPosition;
-                        startPosition = listMsgsKnown.stream().mapToInt(msg -> msg.tokens().size()).sum();
-                        System.out.format("// Trim conversation: %d -> %d msgs, pos %d -> %d%n", conversation.size(),
-                                listMsgsKnown.size(), startPositionOld, startPosition);
-                        isChatModified = true;
-                    }
-                    if (isChatModified) {
-                        System.out.format("// chat modified, listMsgsKnown %d, conversation %d%n", listMsgsKnown.size(), conversation.size());
-                        conversation.clear();
-                        conversation.addAll(listMsgsKnown);
-                        final int tokensSizeNew = startPosition;
-                        conversationTokens.removeIf(token -> token.position() >= tokensSizeNew);
-                    }
-
-                    // Add in the KV-cache unknown parts of the chat and the next prompt.
-                    for (int idx = listMsgsKnown.size(); idx < requestMessages.size(); idx++) {
-                        Message msg = requestMessages.get(idx);
-                        System.out.format("// %s: %s%n", msg.role(), msg.content());
-                        List<Integer> msgTokens = chatFormat.encodeMessage(msg);
-                        conversationTokens.addAll(chatFormat.toTokenDetails(msgTokens, conversationTokens.size()));
-                        conversation.add(new MessageWithTokens(msg.role(), msg.content(), msgTokens));
-                    }
-
                     List<TokenDetails> tokensAssistantHeader = chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")), conversationTokens.size());
                     conversationTokens.addAll(tokensAssistantHeader);
                     //System.out.format("Tokens (start-pos %d): %s%n", startPosition, conversationTokens);
@@ -429,6 +280,223 @@ class LlamaHttpServer {
             e.printStackTrace();
             System.err.println("Couldn't start LLM-server");
         }
+    }
+
+    /**
+     * Processes a GET-request.
+     * @param exchange HTTP-exchange of the current request
+     * @param optionsGlobal global options
+     * @throws IOException in case of an IO-error
+     */
+    private static void processGetRequest(HttpExchange exchange, Options optionsGlobal) throws IOException {
+        String pathReq = exchange.getRequestURI().getPath();
+        String pathBase = optionsGlobal.serverPath();
+        if ("/".equals(pathReq)) {
+            pathReq = "index.html";
+        }
+        if (!Pattern.matches("/?[A-Za-z0-9_.-]*", pathReq)) {
+            System.err.format("Invalid path: %s%n", pathReq);
+            byte[] buf = "Invalid path".getBytes(StandardCharsets.UTF_8);
+            exchange.setAttribute("Content-Type", "application/html");
+            exchange.sendResponseHeaders(404, buf.length);
+            exchange.getResponseBody().write(buf);
+            exchange.close();
+            return;
+        }
+        final File fileCheckGz = new File(pathBase, pathReq + ".gz");
+        final File file = fileCheckGz.isFile() ? fileCheckGz : new File(pathBase, pathReq);
+        if (!file.isFile()) {
+            System.err.println("No such file: " + file);
+            byte[] buf = "File not found".getBytes(StandardCharsets.UTF_8);
+            exchange.setAttribute("Content-Type", "application/html");
+            exchange.sendResponseHeaders(404, buf.length);
+            exchange.getResponseBody().write(buf);
+            exchange.close();
+            return;
+        }
+        exchange.getRequestBody().close();
+        String contentType = switch (pathReq.replaceFirst(".*[.]", "")) {
+            case "html" -> "text/html";
+            case "css" -> "text/css";
+            case "js", "mjs" -> "text/javascript";
+            case "ico" -> "image";
+            default -> "application/octet-stream";
+        };
+        exchange.getResponseHeaders().set("Content-type", contentType);
+        final byte[] buf = (file == fileCheckGz) ? readGzip(file) : Files.readAllBytes(file.toPath());
+        exchange.sendResponseHeaders(200, buf.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(buf);
+        }
+        exchange.close();
+    }
+
+    private static <S extends StateBase, W> LlamaHttpSession<S, W> getOrCreateHttpSession(HttpExchange exchange,
+            Llama<S, W> model, Sampler sampler, Options optionsGlobal,
+            final ConcurrentMap<String, LlamaHttpSession<S, W>> mapSessions, final Map<String, Object> mapRequest,
+            final AtomicLong reqCounter) {
+        List<String> lCookies = exchange.getRequestHeaders().get("Cookie");
+        String cookie = (lCookies != null) ? lCookies.get(0) : null;
+        LlamaHttpSession<S, W> httpSession = null;
+        {
+            String sessionKey = null;
+            if (cookie != null && cookie.startsWith("LLAMA_SESS_ID=")) {
+                sessionKey = cookie.replaceFirst("LLAMA_SESS_ID=([^;]*).*", "$1");
+                httpSession = mapSessions.get(sessionKey);
+                if (httpSession == null) {
+                    System.err.format("Llama-HTTP-session (%s) doesn't exist (any more)%n", sessionKey);
+                    sessionKey = null;
+                }
+            }
+            if (httpSession == null) {
+                // We build a new HTTP-session.
+                httpSession = createHttpSession(exchange, model, sampler, optionsGlobal, mapSessions,
+                        mapRequest, reqCounter);
+            }
+        }
+        return httpSession;
+    }
+
+    /**
+     * Create a new HTTP-session.
+     * @param <S> type of state
+     * @param <W> type of weights
+     * @param exchange current http-exchange
+     * @param model our LLM
+     * @param sampler sampler
+     * @param optionsGlobal global options
+     * @param mapSessions map from session-id to http-session
+     * @param mapRequest current json-request
+     * @param reqCounter request counter
+     * @return model-state of new session
+     */
+    private static <S extends StateBase, W> LlamaHttpSession<S, W> createHttpSession(HttpExchange exchange,
+            Llama<S, W> model, Sampler sampler, Options optionsGlobal,
+            final ConcurrentMap<String, LlamaHttpSession<S, W>> mapSessions, final Map<String, Object> mapRequest,
+            final AtomicLong reqCounter) {
+        LlamaHttpSession<S, W> httpSession;
+        String sessionKey;
+        final S state = model.createNewState(Llama.BATCH_SIZE);
+        sessionKey = "SESS-" + reqCounter.get() + "-" + UUID.randomUUID().toString();
+        exchange.getResponseHeaders().add("Set-Cookie", "LLAMA_SESS_ID=" + sessionKey + "; path=/; SameSite=Strict");
+
+        float temperature = LightweightJsonHandler.readFloat(mapRequest, "temperature", optionsGlobal.temperature());
+        float topP = LightweightJsonHandler.readFloat(mapRequest, "top_p", optionsGlobal.topp());
+        int maxLlamaCpp = LightweightJsonHandler.readInt(mapRequest, "n_predict", optionsGlobal.maxTokens());
+        int maxTokensOld = LightweightJsonHandler.readInt(mapRequest, "max_tokens", maxLlamaCpp);
+        int maxComplTokens = LightweightJsonHandler.readInt(mapRequest, "max_completion_tokens", maxTokensOld);
+        long seed = LightweightJsonHandler.readLong(mapRequest, "seed", optionsGlobal.seed());
+        boolean stream = LightweightJsonHandler.readBoolean(mapRequest, "stream", optionsGlobal.stream());
+        Options optionsReq = new Options(optionsGlobal.modelPath(), "", optionsGlobal.systemPrompt(), true,
+                temperature, topP, seed, maxComplTokens, stream,
+                optionsGlobal.echo(),
+                optionsGlobal.serverHost(), optionsGlobal.serverPort(), optionsGlobal.serverPath(),
+                optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(), optionsGlobal.stateCacheAutoSavePrefix(),
+                optionsGlobal.attentionTrace());
+        System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
+                temperature, topP, maxComplTokens, seed);
+        final List<TokenDetails> conversationTokens = new ArrayList<>();
+        final List<MessageWithTokens> conversation = new ArrayList<>();
+        httpSession = new LlamaHttpSession<>(sessionKey, model, sampler, optionsReq, state, conversationTokens, conversation);
+        mapSessions.put(sessionKey, httpSession);
+        return httpSession;
+    }
+
+    /**
+     * Processes the next chat-request.
+     * How many messages of the current request are in the chat of the previous chat?
+     * Is there a KV-cache which contains the first messages?
+     * @param <S> type of model-state
+     * @param <W> type of weights
+     * @param httpSession HTTP-session
+     * @param model our LLM
+     * @param options options
+     * @param requestMessages request messages
+     * @param startPosition current start position
+     * @param conversation current conversation (before request)
+     * @param conversationTokens conversation-tokens (before request)
+     * @return new start position
+     */
+    private static <S extends StateBase, W> int processRequestChat(LlamaHttpSession<S, W> httpSession,
+            Llama<S, W> model, final Options options, List<Message> requestMessages, int startPosition,
+            final List<MessageWithTokens> conversation, final List<TokenDetails> conversationTokens) {
+        if (options.systemPrompt() != null && conversation.isEmpty() && !Role.SYSTEM.name().equals(requestMessages.getFirst().role().name())) {
+            // We add a system-prompt.
+            requestMessages.add(0, new Message(Role.SYSTEM, options.systemPrompt()));
+        }
+
+        // Does the current KV Cache fit the message list in the request?
+        List<MessageWithTokens> listMsgsKnown = IntStream.range(0, Math.min(requestMessages.size() - 1, conversation.size()))
+                .mapToObj(idx -> new Pair<>(requestMessages.get(idx), conversation.get(idx)))
+                .takeWhile(p -> p.first().role().equals(p.second().role())
+                        && p.first().content().equals(p.second().content()))
+                .map(p -> p.second()).toList();
+        boolean isChatModified = false;
+        if (listMsgsKnown.isEmpty() && options.stateCacheFolder() != null) {
+            // Do we have a stored KV-cache?
+            StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
+            StateCacheFile fileGgsc = stateCache.searchConversationLog(options.stateCacheFolder(), requestMessages);
+            if (fileGgsc != null) {
+                List<MessageWithTokens> msgsFile = fileGgsc.messages();
+                final int numMsgsToCheck = Math.min(msgsFile.size(), requestMessages.size());
+                List<MessageWithTokens> msgsFileKnown = IntStream.range(0, numMsgsToCheck)
+                        .mapToObj(idx -> new Pair<>(requestMessages.get(idx), msgsFile.get(idx)))
+                        .takeWhile(p -> p.first().role().equals(p.second().role())
+                                && p.first().content().equals(p.second().content()))
+                        .map(p -> p.second()).toList();
+                try (InputStream is = Files.newInputStream(fileGgsc.file().toPath())) {
+                    final List<Integer> reqTokens = new ArrayList<>();
+                    // We can read the tokens and KV-caches of the first numMsgsToCopy.size() messages.
+                    conversation.clear();
+                    conversationTokens.clear();
+                    AtomicInteger refPosition = new AtomicInteger();
+                    // We take tokens from msgsFile.
+                    msgsFileKnown.stream().limit(numMsgsToCheck).map(MessageWithTokens::tokens).forEach(tokens -> tokens.stream().forEach(token -> {
+                        reqTokens.add(token);
+                        conversationTokens.add(new TokenDetails(refPosition.getAndIncrement(), token, false, 0f,
+                                model.tokenizer.decodeOneToken(token).getBytes(StandardCharsets.UTF_8), null));
+                    }));
+                    String statTokens = Arrays.toString(msgsFileKnown.stream().map(m -> String.format("%1.1s%d[%8.8s...]",
+                            m.role().name(), m.tokens().size(), LightweightJsonHandler.escapeString(m.content()))).toArray());
+                    startPosition = stateCache.deserialize(is, model.tokenizer(), conversation, reqTokens, options.echo());
+                    // How many messages can we copy from KV-cache?
+                    int numMsgsToCopy = msgsFileKnown.size();
+                    System.out.format("// Start-position via %s is %d (%d %s, %s)%n", fileGgsc.file().getName(), startPosition,
+                            numMsgsToCopy, numMsgsToCopy == 1 ? "msg" : "msgs", statTokens);
+                    listMsgsKnown = msgsFileKnown.subList(0, numMsgsToCopy);
+                    isChatModified = true;
+                } catch (IOException e) {
+                    throw new RuntimeException("IO-error while reading " + fileGgsc, e);
+                }
+            }
+        } else if (listMsgsKnown.size() < conversation.size()) {
+            //System.out.println("listKnown: " + listMsgsKnown);
+            //System.out.println("conv: " + conversation);
+            //System.out.println("Req: " + requestMessages);
+            int startPositionOld = startPosition;
+            startPosition = listMsgsKnown.stream().mapToInt(msg -> msg.tokens().size()).sum();
+            System.out.format("// Trim conversation: %d -> %d msgs, pos %d -> %d%n", conversation.size(),
+                    listMsgsKnown.size(), startPositionOld, startPosition);
+            isChatModified = true;
+        }
+        if (isChatModified) {
+            System.out.format("// chat modified, listMsgsKnown %d, conversation %d%n", listMsgsKnown.size(), conversation.size());
+            conversation.clear();
+            conversation.addAll(listMsgsKnown);
+            final int tokensSizeNew = startPosition;
+            conversationTokens.removeIf(token -> token.position() >= tokensSizeNew);
+        }
+
+        // Add in the KV-cache unknown parts of the chat and the next prompt.
+        ChatFormat chatFormat = model.chatFormat();
+        for (int idx = listMsgsKnown.size(); idx < requestMessages.size(); idx++) {
+            Message msg = requestMessages.get(idx);
+            System.out.format("// %s: %s%n", msg.role(), msg.content());
+            List<Integer> msgTokens = chatFormat.encodeMessage(msg);
+            conversationTokens.addAll(chatFormat.toTokenDetails(msgTokens, conversationTokens.size()));
+            conversation.add(new MessageWithTokens(msg.role(), msg.content(), msgTokens));
+        }
+        return startPosition;
     }
 
     private static <S extends StateBase, W> Map<String, Object> createResponse(Llama<S, W> model, final AtomicLong reqCounter,
