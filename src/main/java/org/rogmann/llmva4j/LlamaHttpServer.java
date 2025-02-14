@@ -196,7 +196,7 @@ class LlamaHttpServer {
                                 temperature, topP, seed, maxComplTokens, stream,
                                 optionsGlobal.echo(),
                                 optionsGlobal.serverHost(), optionsGlobal.serverPort(), optionsGlobal.serverPath(),
-                                optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(),
+                                optionsGlobal.stateCacheFolder(), optionsGlobal.stateCache(), optionsGlobal.stateCacheAutoSavePrefix(),
                                 optionsGlobal.attentionTrace());
                         System.out.format("New HTTP-Session (%s) for (%s), temp=%f, top_p=%f, n=%d, seed=%d%n", sessionKey, exchange.getRemoteAddress(),
                                 temperature, topP, maxComplTokens, seed);
@@ -301,7 +301,7 @@ class LlamaHttpServer {
                         isChatModified = true;
                     }
                     if (isChatModified) {
-                        System.out.format("// listMsgsKnown < conversation: %d < %d%n", listMsgsKnown.size(), conversation.size());
+                        System.out.format("// chat modified, listMsgsKnown %d, conversation %d%n", listMsgsKnown.size(), conversation.size());
                         conversation.clear();
                         conversation.addAll(listMsgsKnown);
                         final int tokensSizeNew = startPosition;
@@ -372,6 +372,17 @@ class LlamaHttpServer {
                         System.out.println(responseText);
                     }
                     conversation.add(new MessageWithTokens(Role.ASSISTANT, sbResponse.toString(), tokensNew));
+                    if (options.stateCacheAutoSavePrefix() != null) {
+                        StateCache stateCache = new StateCache(model.configuration(), httpSession.state);
+                        try {
+                            String cmdSaveFile = String.format("/save:%s", options.stateCacheAutoSavePrefix());
+                            String sysMsg = stateCache.saveKVCache(cmdSaveFile, options.stateCacheFolder(),
+                                    conversationTokens, conversation);
+                            System.out.format("// %s%n", sysMsg);
+                        } catch (IllegalStateException e) {
+                            System.err.println(e.getMessage());
+                        }
+                    }
                 }
                 Map<String, Object> mapResponse = createResponse(model, reqCounter, tsCreation,
                         startPosition, stopToken, options.stream(), responseText, tokenDetails);

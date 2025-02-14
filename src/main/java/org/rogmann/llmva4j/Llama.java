@@ -158,7 +158,8 @@ public abstract class Llama<S extends StateBase, W> {
 
     record Options(Path modelPath, String prompt, String systemPrompt, boolean interactive,
             float temperature, float topp, long seed, int maxTokens, boolean stream, boolean echo,
-            String serverHost, int serverPort, String serverPath, Path stateCacheFolder, Path stateCache, int attentionTrace) {
+            String serverHost, int serverPort, String serverPath,
+            Path stateCacheFolder, Path stateCache, String stateCacheAutoSavePrefix, int attentionTrace) {
 
         static final int DEFAULT_MAX_TOKENS = 512;
 
@@ -198,6 +199,7 @@ public abstract class Llama<S extends StateBase, W> {
             out.println("  --path <path>                 optional path of public-html of http-server");
             out.println("  --state-cache-folder          optional folder to store state-caches (to save .ggsc-files)");
             out.println("  --state-cache, -sc path       optional state-cache to be used (read .ggsc-file)");
+            out.println("  --state-auto-save prefix      optional prefix to save every inference into state-cache folder");
             out.println("  --attention-trace <int>       maximum number of attentions to be traced per token");
             out.println();
             out.println("Examples:");
@@ -225,6 +227,7 @@ public abstract class Llama<S extends StateBase, W> {
             String serverPath = null;
             Path stateCacheFolder = null;
             Path stateCache = null;
+            String stateCacheAutoSavePrefix = null;
             int attentionTrace = 0;
 
             for (int i = 0; i < args.length; i++) {
@@ -263,6 +266,7 @@ public abstract class Llama<S extends StateBase, W> {
                             case "--path" -> serverPath = nextArg;
                             case "--state-cache-folder" -> stateCacheFolder = Paths.get(nextArg);
                             case "--state-cache", "-sc" -> stateCache = Paths.get(nextArg);
+                            case "--state-cache-auto-save" -> stateCacheAutoSavePrefix = nextArg;
                             case "--attention-trace" -> attentionTrace = Integer.parseInt(nextArg);
                             default -> require(false, "Unknown option: %s", optionName);
                         }
@@ -270,7 +274,7 @@ public abstract class Llama<S extends StateBase, W> {
                 }
             }
             return new Options(modelPath, prompt, systemPrompt, interactive, temperature, topp, seed, maxTokens, stream, echo,
-                    serverHost, serverPort, serverPath, stateCacheFolder, stateCache, attentionTrace);
+                    serverHost, serverPort, serverPath, stateCacheFolder, stateCache, stateCacheAutoSavePrefix, attentionTrace);
         }
     }
 
