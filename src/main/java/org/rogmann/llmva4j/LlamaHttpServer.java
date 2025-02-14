@@ -74,6 +74,7 @@ class LlamaHttpServer {
                 processGetRequest(exchange, optionsGlobal);
                 return;
             }
+            boolean isFillInTheMiddle = exchange.getRequestURI().toString().endsWith("/infill");
             List<Message> requestMessages = new ArrayList<>();
             final Map<String, Object> mapRequest;
             try (InputStream is = exchange.getRequestBody();
@@ -84,7 +85,7 @@ class LlamaHttpServer {
                     LightweightJsonHandler.readChar(tbr, true, '{');
                     mapRequest = LightweightJsonHandler.parseJsonDict(tbr);
 
-                    if (exchange.getRequestURI().toString().endsWith("/infill")) {
+                    if (isFillInTheMiddle) {
                         // fill-in-the-middle (llama.cpp-API)
                         String inputPrefix = LightweightJsonHandler.getJsonValue(mapRequest, "input_prefix", String.class);
                         String inputSuffix = LightweightJsonHandler.getJsonValue(mapRequest, "input_suffix", String.class);
@@ -213,8 +214,14 @@ class LlamaHttpServer {
                                     sbResponse.append(sToken);
                                 }
 
-                                Map<String, Object> mapResponse = createResponse(model, reqCounter, tsCreation,
-                                        startPositionOutput, iStopToken, true, sToken, List.of(tokenDetail));
+                                Map<String, Object> mapResponse;
+                                if (isFillInTheMiddle) {
+                                    mapResponse = createResponseFim(model, reqCounter, tsCreation,
+                                            startPositionOutput, iStopToken, true, sToken, List.of(tokenDetail));
+                                } else {
+                                    mapResponse = createResponse(model, reqCounter, tsCreation,
+                                            startPositionOutput, iStopToken, true, sToken, List.of(tokenDetail));
+                                }
 
                                 var sbOut = new StringBuilder();
                                 LightweightJsonHandler.dumpJson(sbOut, mapResponse);
@@ -259,8 +266,14 @@ class LlamaHttpServer {
                         }
                     }
                 }
-                Map<String, Object> mapResponse = createResponse(model, reqCounter, tsCreation,
-                        startPosition, stopToken, options.stream(), responseText, tokenDetails);
+                Map<String, Object> mapResponse;
+                if (isFillInTheMiddle) {
+                    mapResponse = createResponseFim(model, reqCounter, tsCreation,
+                            startPosition, stopToken, options.stream(), responseText, tokenDetails);
+                } else {
+                    mapResponse = createResponse(model, reqCounter, tsCreation,
+                            startPosition, stopToken, options.stream(), responseText, tokenDetails);
+                }
                 if (stopToken == null) {
                     System.err.println("Ran out of context length...");
                 }
@@ -591,6 +604,18 @@ class LlamaHttpServer {
         choice0.put("finishReason", finishReason);
         choices.add(choice0);
         mapResponse.put("choices", choices);
+    }
+
+    private static <S extends StateBase, W> Map<String, Object> createResponseFim(Llama<S, W> model, final AtomicLong reqCounter,
+            final long tsCreation, int startPosition, Integer stopToken,
+            boolean isDelta, String responseText, List<TokenDetails> tokenDetails) {
+        Map<String, Object> mapResponse = new LinkedHashMap<>();
+        mapResponse.put("index", 0);
+        mapResponse.put("content", responseText);
+        List<Integer> tokens = tokenDetails.stream().map(token -> token.token()).toList();
+        mapResponse.put("tokens", tokens);
+        mapResponse.put("stop", stopToken != null);
+        return mapResponse;
     }
 
     private static byte[] readGzip(File file) throws IOException {
