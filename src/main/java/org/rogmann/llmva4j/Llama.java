@@ -2185,8 +2185,9 @@ abstract class ChatFormat {
     protected final int endOfTurn;
     protected final int endOfText;
     protected final int endOfMessage;
+    protected final int endOfTextFim;
 
-    public record ChatTokens(String tStartHeader, String tEndHeader, String tEndOfTurn, String tEndOfText) { }
+    public record ChatTokens(String tStartHeader, String tEndHeader, String tEndOfTurn, String tEndOfText, String tEndOfTextFim) { }
 
     public ChatFormat(Tokenizer tokenizer, 
             String tBeginOfText, 
@@ -2194,7 +2195,8 @@ abstract class ChatFormat {
             String tEndHeader, 
             String tEndOfTurn, 
             String tEndOfText, 
-            String tEndOfMessage) {
+            String tEndOfMessage,
+            String tEndOfTextFim) {
         this.tokenizer = tokenizer;
         Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
         this.beginOfText = specialTokens.getOrDefault(tBeginOfText, -1);
@@ -2202,6 +2204,7 @@ abstract class ChatFormat {
         this.endHeader = specialTokens.getOrDefault(tEndHeader, -1);
         this.endOfTurn = specialTokens.getOrDefault(tEndOfTurn, -1);
         this.endOfText = specialTokens.getOrDefault(tEndOfText, -1);
+        this.endOfTextFim = specialTokens.getOrDefault(tEndOfTextFim, -1);
         this.endOfMessage = specialTokens.getOrDefault(tEndOfMessage, -1); // Use default value if key not found
     }
 
@@ -2271,6 +2274,9 @@ abstract class ChatFormat {
         public static ChatFormat.Role SYSTEM = new ChatFormat.Role("system");
         public static ChatFormat.Role USER = new ChatFormat.Role("user");
         public static ChatFormat.Role ASSISTANT = new ChatFormat.Role("assistant");
+        public static ChatFormat.Role FIM_PREFIX = new ChatFormat.Role("fim_prefix");
+        public static ChatFormat.Role FIM_SUFFIX = new ChatFormat.Role("fim_suffix");
+        public static ChatFormat.Role FIM_MIDDLE = new ChatFormat.Role("fim_middle");
 
         @Override
         public String toString() {

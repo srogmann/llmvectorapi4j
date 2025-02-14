@@ -84,24 +84,40 @@ class LlamaHttpServer {
                     LightweightJsonHandler.readChar(tbr, true, '{');
                     mapRequest = LightweightJsonHandler.parseJsonDict(tbr);
 
-                    List<Map<String, Object>> messages = LightweightJsonHandler.getJsonArrayDicts(mapRequest, "messages");
-                    if (messages == null) {
-                        throw new IllegalArgumentException("The request doesn't contain messages.");
-                    }
-                    for (Map<String, Object> msg : messages) {
-                        String roleName = LightweightJsonHandler.getJsonValue(msg, "role", String.class);
-                        String content = LightweightJsonHandler.getJsonValue(msg, "content", String.class);
-                        if (roleName == null) {
-                            throw new IllegalArgumentException("role is missing in incoming message.");
+                    if (exchange.getRequestURI().toString().endsWith("/infill")) {
+                        // fill-in-the-middle (llama.cpp-API)
+                        String inputPrefix = LightweightJsonHandler.getJsonValue(mapRequest, "input_prefix", String.class);
+                        String inputSuffix = LightweightJsonHandler.getJsonValue(mapRequest, "input_suffix", String.class);
+                        if (inputPrefix == null) {
+                            throw new IllegalArgumentException("input_prefix is missing in infill-request");
                         }
-                        if (content == null) {
-                            throw new IllegalArgumentException("content is missing in incoming message.");
+                        if (inputSuffix == null) {
+                            throw new IllegalArgumentException("input_suffix is missing in infill-request");
                         }
-                        if ("/stop".equalsIgnoreCase(content)) {
-                            refServer.get().stop(0);
-                            throw new IllegalArgumentException("Server is stopping");
+                        requestMessages.add(new Message(Role.FIM_PREFIX, inputPrefix));
+                        requestMessages.add(new Message(Role.FIM_SUFFIX, inputSuffix));
+                    } else {
+                        // chat completion
+
+                        List<Map<String, Object>> messages = LightweightJsonHandler.getJsonArrayDicts(mapRequest, "messages");
+                        if (messages == null) {
+                            throw new IllegalArgumentException("The request doesn't contain messages.");
                         }
-                        requestMessages.add(new Message(new Role(roleName), content));
+                        for (Map<String, Object> msg : messages) {
+                            String roleName = LightweightJsonHandler.getJsonValue(msg, "role", String.class);
+                            String content = LightweightJsonHandler.getJsonValue(msg, "content", String.class);
+                            if (roleName == null) {
+                                throw new IllegalArgumentException("role is missing in incoming message.");
+                            }
+                            if (content == null) {
+                                throw new IllegalArgumentException("content is missing in incoming message.");
+                            }
+                            if ("/stop".equalsIgnoreCase(content)) {
+                                refServer.get().stop(0);
+                                throw new IllegalArgumentException("Server is stopping");
+                            }
+                            requestMessages.add(new Message(new Role(roleName), content));
+                        }
                     }
                 }
                 catch (RuntimeException e) {
@@ -168,8 +184,16 @@ class LlamaHttpServer {
                             conversation, conversationTokens);
 
                     ChatFormat chatFormat = model.chatFormat();
-                    List<TokenDetails> tokensAssistantHeader = chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")), conversationTokens.size());
-                    conversationTokens.addAll(tokensAssistantHeader);
+                    List<TokenDetails> tokensAssistantHeader;
+                    if (Role.FIM_PREFIX.equals(requestMessages.getFirst().role())) {
+                        // fill-in-the-middle
+                        tokensAssistantHeader = chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.FIM_MIDDLE, "")), conversationTokens.size());
+                        conversationTokens.addAll(tokensAssistantHeader);
+                    } else {
+                        // chat-completion
+                        tokensAssistantHeader = chatFormat.toTokenDetails(chatFormat.encodeHeader(new ChatFormat.Message(ChatFormat.Role.ASSISTANT, "")), conversationTokens.size());
+                        conversationTokens.addAll(tokensAssistantHeader);
+                    }
                     //System.out.format("Tokens (start-pos %d): %s%n", startPosition, conversationTokens);
                     //System.out.println("Text: " + model.tokenizer().decode(conversationTokens).replace("\n", "\\n"));
                     final Set<Integer> stopTokens = chatFormat.getStopTokens();

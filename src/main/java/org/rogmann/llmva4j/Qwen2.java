@@ -250,9 +250,10 @@ final class Qwen2ModelLoader {
                             : tokenEmbeddingTable // weights are shared
             );
 
+            // Qwen2.5-Coder uses <|endoftext|> as stop-token.
             ChatTokens chatTokens = isDeepSeekR1DistillQwen ?
-                    new ChatTokens( "<｜begin▁of▁sentence｜>", "", "", "<｜end▁of▁sentence｜>") :
-                    new ChatTokens( "<|im_start|>", "<|im_end|>", "", "<|end_of_text|>");
+                    new ChatTokens( "<｜begin▁of▁sentence｜>", "", "", "<｜end▁of▁sentence｜>", "") :
+                    new ChatTokens( "<|im_start|>", "<|im_end|>", "", "<|end_of_text|>", "<|endoftext|>");
             return new Qwen2Llama(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw, chatTokens);
         }
     }
@@ -584,11 +585,20 @@ class Qwen2ChatMLFormat extends ChatFormat {
     protected final int imStart; // beginOfText
     protected final int imEnd; // endOfText
 
+    protected final int fimPrefix;
+    protected final int fimSuffix;
+    protected final int fimMiddle;
+
     public Qwen2ChatMLFormat(Tokenizer tokenizer, ChatTokens chatTokens) {
-        super(tokenizer, "", chatTokens.tStartHeader(), chatTokens.tEndHeader(), chatTokens.tEndOfTurn(), chatTokens.tEndOfText(), "");
+        super(tokenizer, "", chatTokens.tStartHeader(), chatTokens.tEndHeader(), chatTokens.tEndOfTurn(), chatTokens.tEndOfText(), "", chatTokens.tEndOfTextFim());
 
         imStart = super.startHeader;
         imEnd = super.endHeader;
+
+        Map<String, Integer> specialTokens = tokenizer.getSpecialTokens();
+        fimPrefix = specialTokens.getOrDefault("<|fim_prefix|>", -1);
+        fimSuffix = specialTokens.getOrDefault("<|fim_suffix|>", -1);
+        fimMiddle = specialTokens.getOrDefault("<|fim_middle|>", -1);
     }
 
     public Tokenizer getTokenizer() {
@@ -602,7 +612,7 @@ class Qwen2ChatMLFormat extends ChatFormat {
         if (imEnd == -1) {
             return Set.of(endOfText);
         }
-        return Set.of(imEnd, endOfText);
+        return Set.of(imEnd, endOfText, endOfTextFim);
     }
 
     public List<Integer> encodeHeader(Message message) {
@@ -613,6 +623,9 @@ class Qwen2ChatMLFormat extends ChatFormat {
             case "system" -> null;
             case "user" -> "<｜User｜>";
             case "assistant" -> "<｜Assistant｜>";
+            case "fim_prefix" -> "<|fim_prefix|>";
+            case "fim_middle" -> "<|fim_middle|>";
+            case "fim_suffix" -> "<|fim_suffix|>";
             default -> null;
             };
             if (sToken != null) {
@@ -622,6 +635,13 @@ class Qwen2ChatMLFormat extends ChatFormat {
                 }
                 tokens.add(token);
             }
+        } else if (Role.FIM_PREFIX.equals(message.role())) {
+            // fill-in-the-middle, token fim_prefix.
+            tokens.add(fimPrefix);
+        } else if (Role.FIM_SUFFIX.equals(message.role())) {
+            tokens.add(fimSuffix);
+        } else if (Role.FIM_MIDDLE.equals(message.role())) {
+            tokens.add(fimMiddle);
         } else {
             tokens.add(imStart);
             tokens.addAll(this.tokenizer.encodeAsList(message.role().name()));
@@ -633,7 +653,10 @@ class Qwen2ChatMLFormat extends ChatFormat {
     public List<Integer> encodeMessage(Message message) {
         List<Integer> tokens = this.encodeHeader(message);
         tokens.addAll(this.tokenizer.encodeAsList(message.content().strip()));
-        if (imEnd != -1) {
+        boolean isFim = Role.FIM_PREFIX.equals(message.role())
+                || Role.FIM_SUFFIX.equals(message.role())
+                || Role.FIM_MIDDLE.equals(message.role());
+        if (imEnd != -1 && !isFim) {
             tokens.add(imEnd);
         }
         return tokens;

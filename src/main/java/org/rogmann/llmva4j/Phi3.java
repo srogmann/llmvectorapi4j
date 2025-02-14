@@ -731,7 +731,7 @@ public class Phi3 {
         protected final int end;
 
         public Phi3ChatFormat(Tokenizer tokenizer) {
-            super(tokenizer, "", "", "<|end|>", "", "", "");
+            super(tokenizer, "", "", "<|end|>", "", "", "", "");
             this.tokenizer = tokenizer;
             Map<String, Integer> specialTokens = this.tokenizer.getSpecialTokens();
             this.end = specialTokens.get("<|end|>");

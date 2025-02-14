@@ -319,7 +319,7 @@ public class Llama3 extends Llama<State, Weights> {
     public static class Llama3ChatFormat extends ChatFormat {
         public Llama3ChatFormat(Tokenizer tokenizer) {
             super(tokenizer, "<|begin_of_text|>", "<|start_header_id|>", "<|end_header_id|>",
-                    "<|eot_id|>", "<|end_of_text|>", "<|eom_id|>");
+                    "<|eot_id|>", "<|end_of_text|>", "<|eom_id|>", "");
         }
     }
 
