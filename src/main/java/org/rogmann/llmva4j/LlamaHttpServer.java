@@ -552,6 +552,8 @@ class LlamaHttpServer {
         mapResponse.put("object", "chat.completion");
         mapResponse.put("created", Long.toString(tsCreation / 1000L));
         mapResponse.put("model", model.modelName());
+        mapResponse.put("model.nHeads", model.configuration().numberOfHeads);
+        mapResponse.put("model.nLayers", model.configuration().numberOfLayers);
         List<Object> choices = new ArrayList<>();
         Map<String, Object> choice0 = new LinkedHashMap<>();
         choice0.put("index", "0");

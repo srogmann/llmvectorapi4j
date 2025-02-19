@@ -43,9 +43,11 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
             margin-top: 20px;
             padding: 10px;
             border: 1px solid #ccc;
-            width: 100%;
-            box-sizing: border-box;
+            /*box-sizing: border-box;*/
             font-family: Arial, sans-serif;
+            color: #000;
+            width: 48%; /* half of the container */
+            margin-right: 2%; /* little margin at the right */
         }
 
         #arrow-svg {
@@ -55,6 +57,10 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
             width: 100%;
             height: 100%;
             pointer-events: none; /* Allow interaction with tokens below */
+        }
+
+        #arrow-svg marker {
+            stroke: #404040;
         }
 
         #file-input {
@@ -73,6 +79,17 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
             margin-top: 5px;
         }
 
+        .container {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+        }
+
+        #layers-svg {
+            width: 48%; /* half of the container */
+            margin-left: 2%; /* little margin on the left */
+        }
+
         /* Dark mode styles */
         @media (prefers-color-scheme: dark) {
             body {
@@ -88,19 +105,21 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
                 background-color: #444; /* Change background color on hover */
             }
 
+            #arrow-svg marker {
+                stroke: #e0e0e0;
+            }
+
             #info-field {
                 border-color: #555;
                 background-color: #1e1e1e;
                 color: #e0e0e0;
-            }
-
-            #arrow-svg marker {
-                stroke: #e0e0e0;
+                width: 48%; /* half of the container */
+                margin-right: 2%; /* little margin at the right */
             }
         }
     </style>
 </head>
-<body>
+<body class="dark-mode">
     <h1>LLM Attention Analysis</h1>
     <input type="file" id="file-input" accept=".json">
     <div id="prompt-area">
@@ -111,7 +130,10 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
     </div>
     <div id="token-container"></div>
     <svg id="arrow-svg"></svg>
-    <textarea id="info-field" rows="15" readonly></textarea>
+	<div class="container">
+	    <textarea id="info-field" rows="15" readonly></textarea>
+	    <svg id="layers-svg"></svg>
+	</div>
 
     <script>
         // Array to store token information
@@ -167,6 +189,13 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
                     height: rect.height,
                     attentions: tokenData.attentions
                 });
+
+                // Add attentions to the statistcs.
+                if (tokenData.attentions) {
+                    tokenData.attentions.forEach(att => {
+                        model.addAttention(att.layer, att.head, att.valueLength);
+                    });
+                }
 
                 // Add hover event listener
                 tokenElement.addEventListener('mouseenter', () => {
@@ -242,6 +271,7 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
         // Function to draw arrows for a specific token info (details).
         function drawArrowsForToken(token) {
             createSvgDefs();
+            model.removeHighlights();
 
             const position = token.position;
             if (token.attentions) {
@@ -249,10 +279,12 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
                     const attention = token.attentions[i];
                     const positionRef = attention['position-ref'];
                     //console.log("dAFT, p ", position, ", pR ", positionRef, ", tI.length", tokenInfo.length);
+                    const col = i == 0 ? 'blue' : 'grey';
                     if (positionRef >= 0 && positionRef < tokenInfo.length) {
                         //console.log(`drawBent: position=${position}, positionRef: ${positionRef}`);
-                        drawBentArrow(`token-${position}`, `token-${positionRef}`, i == 0 ? 'blue' : 'grey');
+                        drawBentArrow(`token-${position}`, `token-${positionRef}`, col);
                     }
+                    model.highlightHead(attention.layer, attention.head, col);
                 }
             }
         }
@@ -282,6 +314,166 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
             marker.appendChild(path);
             defs.appendChild(marker);
             svg.appendChild(defs);
+        }
+
+        class LLMModel {
+            constructor() {
+            }
+
+            initialize(nLayers, nHeads) {
+                console.log(`initialize: LLMModel (${nLayers}, ${nHeads})`);
+                this.nHeads = nHeads;
+                this.nLayers = nLayers;
+                this.svgElement = document.getElementById('layers-svg');
+                this.originalFillColors = []; // Array to store original fill
+                this.headerAttentionSums = []; // Array to store sum of attentions per head
+                this.layerAttentionSums = []; // Array to store sum of attentions per layer
+                this.createLayers();
+            }
+
+            createLayers() {
+                // Remove all existing rectangles
+                while (this.svgElement.firstChild) {
+                    this.svgElement.removeChild(this.svgElement.firstChild);
+                }
+
+                // Get the width and height of the SVG element
+                const svgWidth = this.svgElement.clientWidth;
+                const svgHeight = svgWidth * 0.25 / this.nHeads * this.nLayers;
+
+                // Define the margin around each rectangle
+                const margin = 3;
+
+                // Calculate the effective width and height for each rectangle
+                const rectWidth = (svgWidth - (this.nHeads + 1) * margin) / this.nHeads;
+                const rectHeight = (svgHeight - (this.nLayers + 1) * margin) / this.nLayers;
+
+                // Calculate the total height of the rectangle table
+                const totalHeight = (this.nLayers * (rectHeight + margin)) + margin;
+                // Set the height of the SVG element to the total height of the rectangle table
+                this.svgElement.setAttribute('height', totalHeight);
+
+                // Create a table of rectangles
+                for (let i = 0; i < this.nLayers; i++) {
+                    for (let j = 0; j < this.nHeads; j++) {
+                        const rect = document.createElementNS("http://www.w3.org/2000/svg", 'rect');
+                        rect.setAttribute('x', j * (rectWidth + margin) + margin);
+                        rect.setAttribute('y', i * (rectHeight + margin) + margin);
+                        rect.setAttribute('width', rectWidth);
+                        rect.setAttribute('height', rectHeight);
+                        rect.setAttribute('stroke', 'black');
+                        rect.setAttribute('fill', 'black');
+
+                        this.svgElement.appendChild(rect);
+                    }
+                }
+
+                // Initialize the original fill colors array
+                this.originalFillColors = Array.from({ length: this.nLayers * this.nHeads }, () => 'black');
+
+                // Initialize the attention-statistics.
+                this.headerAttentionSums = Array.from({ length: this.nLayers * this.nHeads }, () => 0.0);
+                this.layerAttentionSums = Array.from({ length: this.nLayers }, () => 0.0);
+            }
+
+            setStyle(idxLayer, idxHead, colStroke, colFill) {
+                const rects = this.svgElement.getElementsByTagName('rect');
+
+                // Calculate the index of the rectangle based on idxHead and idxLayer
+                const rectIndex = idxLayer * this.nHeads + idxHead;
+                if (rectIndex < rects.length) {
+                    const rect = rects[rectIndex];
+                    rect.setAttribute('stroke', colStroke);
+                    rect.setAttribute('fill', colFill);
+                }
+            }
+
+            addAttention(idxLayer, idxHead, value) {
+                this.headerAttentionSums[idxLayer * this.nHeads + idxHead] += value;
+                this.layerAttentionSums[idxLayer] += value;
+                let sumLayer = this.layerAttentionSums[idxLayer];
+                const colors = ['#000', '#ff0'];
+                for (let i = 0; i < this.nHeads; i++) {
+                    const idxRect = idxLayer * this.nHeads + i;
+                    const percentage = (sumLayer > 0) ? this.headerAttentionSums[idxRect] / sumLayer : 0;
+                    const color = this.interpolateColor(colors, percentage);
+                    this.setStyle(idxLayer, i, color, color);
+                    this.originalFillColors[idxRect] = color;
+                }
+            }
+
+            highlightHead(idxLayer, idxHead, col) {
+                // Sets the fill of the rectangle to 'red'.
+                const rects = this.svgElement.getElementsByTagName('rect');
+                const rectIndex = idxLayer * this.nHeads + idxHead;
+                if (rectIndex < rects.length) {
+                    const rect = rects[rectIndex];
+                    //const originalColor = rect.getAttribute('fill');
+                    //this.originalFillColors[rectIndex] = originalColor;
+                    rect.setAttribute('fill', col);
+                }
+            }
+
+            removeHighlights() {
+                // Sets the fill of the highlighted rectangle to the original value.
+                const rects = this.svgElement.getElementsByTagName('rect');
+                for (let i = 0; i < this.originalFillColors.length; i++) {
+                    const rect = rects[i];
+                    rect.setAttribute('fill', this.originalFillColors[i]);
+                }
+            }
+
+            interpolateColor(colors, temperature) {
+                // Ensure the temperature is within the range [0.0, 1.0]
+                temperature = Math.max(0.0, Math.min(1.0, temperature));
+
+                // Get the number of colors
+                const numColors = colors.length;
+
+                // If there's only one color, return it
+                if (numColors === 1) {
+                    return colors[0];
+                }
+
+                // Determine the index of the colors to interpolate between
+                const index = Math.floor(temperature * (numColors - 1));
+                const nextIndex = (index + 1) % numColors;
+
+                // Calculate the interpolation factor
+                const factor = temperature * (numColors - 1) - index;
+
+                // Extract the RGB values of the colors
+                const startColor = this.hexShortToRgb(colors[index]);
+                const endColor = this.hexShortToRgb(colors[nextIndex]);
+
+                // Interpolate the RGB values
+                const interpolatedColor = {
+                    r: Math.round(startColor.r + factor * (endColor.r - startColor.r)),
+                    g: Math.round(startColor.g + factor * (endColor.g - startColor.g)),
+                    b: Math.round(startColor.b + factor * (endColor.b - startColor.b))
+                };
+
+                // Convert the interpolated RGB values back to a hex color
+                return this.rgbToHex(interpolatedColor);
+            }
+
+            // Helper function to convert a hex color to RGB
+            hexShortToRgb(hex) {
+                const result = /^#?([a-f\d]{1})([a-f\d]{1})([a-f\d]{1})$/i.exec(hex);
+                return result ? {
+                    r: 16 * parseInt(result[1], 16),
+                    g: 16 * parseInt(result[2], 16),
+                    b: 16 * parseInt(result[3], 16)
+                } : null;
+            }
+
+            // Helper function to convert an RGB color to hex
+            rgbToHex(rgb) {
+                const r = Math.round(rgb.r).toString(16).padStart(2, '0');
+                const g = Math.round(rgb.g).toString(16).padStart(2, '0');
+                const b = Math.round(rgb.b).toString(16).padStart(2, '0');
+                return `#${r}${g}${b}`;
+            }
         }
 
         // Function to handle file upload
@@ -360,6 +552,7 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
                 if (done) break;
                 const chunk = decoder.decode(value, { stream: true });
                 const lines = chunk.split('\n');
+                let eventNo = 0;
                 lines.forEach(line => {
                     if (line.startsWith('data: ')) {
                         try {
@@ -371,7 +564,18 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
                                 console.error('Problematic line:', line, ', length:', line.length);
                                 throw new Error(`Failed to parse JSON-response of LLM-server: ${error.message}.`);
                             }
+
                             //console.trace("data: ", data);
+                            eventNo = eventNo + 1;
+                            if (eventNo == 1) {
+                                const nHeads = data['model.nHeads'];
+                                const nLayers = data['model.nLayers'];
+                                if (model.nHeads != nHeads || model.nLayers != nLayers) {
+                                    console.log("new model: ", nLayers, nHeads);
+                                    model.initialize(nLayers, nHeads);
+                                }
+                            }
+
                             if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].logprobs.content[0]) {
                                 const delta = data.choices[0].delta;
                                 //const tokens = delta.content.split(' ');
@@ -430,6 +634,9 @@ Prompt 4: Add a JSON-upload, the json-document text-with-attentions.json contain
 
         // Add event listener for reset button
         document.getElementById('reset-button').addEventListener('click', resetChat);
+
+        const model = new LLMModel();
+        model.initialize(20, 8);
     </script>
 </body>
 </html>
