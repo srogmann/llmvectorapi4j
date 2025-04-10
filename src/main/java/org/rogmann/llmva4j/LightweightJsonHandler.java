@@ -2,6 +2,7 @@ package org.rogmann.llmva4j;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.StringReader;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -180,6 +181,36 @@ class LightweightJsonHandler {
             needComma = (c != ',');
         }
         return list;
+    }
+
+    /**
+     * This is a simple (not complete, but without dependency) JSON-parser used to parse llama.cpp-responses.
+     * Use a parser of https://json.org/ to get a complete implementation.
+     * @param sJson JSON document
+     * @return map from key to value
+     * @throws IOException in case of an IO error
+     */
+    public static Map<String, Object> parseJsonDict(String sJson) throws IOException {
+        BufferedReader br = new BufferedReader(new StringReader(sJson));
+        return parseJsonDict(br, true);
+    }
+
+    /**
+     * This is a simple (not complete, but without dependency) JSON-parser used to parse llama.cpp-responses.
+     * Use a parser of https://json.org/ to get a complete implementation.
+     * @param br reader containing a JSON document
+     * @param readCurlyBrace <code>true</code>, if the curly-brace has not yet been read
+     * @return map from key to value
+     * @throws IOException in case of an IO error
+     */
+    static Map<String, Object> parseJsonDict(BufferedReader br, boolean readCurlyBrace) throws IOException {
+        if (readCurlyBrace) {
+            char c = readChar(br, false);
+            if (c != '{') {
+                throw new IllegalArgumentException("Missing left curly brace: " + c);
+            }
+        }
+        return parseJsonDict(br);
     }
 
     /**
