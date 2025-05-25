@@ -13,6 +13,7 @@ Supported models are:
 * Llama-3 (Llama-3.2, Llama-3.3)
 * Phi-3 (CLI only, no http server)
 * Qwen-2.5
+* Qwen3 (non-MoE)
 
 This project has no dependencies on other libraries. You may have a look at [LangChain for Java](https://github.com/langchain4j/langchain4j).
 
