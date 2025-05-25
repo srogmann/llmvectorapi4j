@@ -40,6 +40,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -88,7 +89,9 @@ public abstract class Llama<S extends StateBase, W> {
         Options options = Options.parseOptions(args);
         Path modelPath = options.modelPath();
         String sPath = modelPath.getFileName().toString().toLowerCase();
-        if (sPath.contains("qwen")) {
+        if (sPath.contains("qwen3") || sPath.contains("qwen-3")) {
+            Qwen3.main(args);;
+        } else if (sPath.contains("qwen")) {
             Qwen2.main(args);
         } else if (sPath.contains("phi")) {
             Phi3.main(args);
@@ -128,6 +131,139 @@ public abstract class Llama<S extends StateBase, W> {
     public abstract S createNewState(int batchsize);
     
     public abstract FloatTensor forward(S state, int[] tokens, int position, boolean computeLogits, AttentionConsumer attentionConsumer);
+
+    protected static void dump(FloatTensor[] x, String name, int dim1, int dim2) {
+        System.out.format("Tensor %s: %d × %d%n", name, dim1, dim2);
+        StringBuilder sb = new StringBuilder(100);
+        sb.append("[\n");
+        for (int d1 = 0; d1 < dim1; d1++) {
+            if (d1 == 3) {
+                sb.append("  ...\n");
+                continue;
+            }
+            if (d1 >= 3 && d1 < dim1 - 3) {
+                continue;
+            }
+            sb.append("  [");
+            for (int d2 = 0; d2 < dim2; d2++) {
+                if (d2 == 3) {
+                    sb.append(", ...");
+                    continue;
+                }
+                if (d2 >= 3 && d2 < dim2 - 3) {
+                    continue;
+                }
+                if (d2 > 0) {
+                    sb.append(", ");
+                }
+                sb.append(String.format("%.4f", x[d1].getFloat(d2)));
+            }
+            sb.append("]\n");
+        }
+        sb.append("]\n");
+        System.out.print(sb.toString());
+    }
+
+    protected static void dump(FloatTensor[] x, String name, int dim1, int dim2, int dim3) {
+        System.out.format("Tensor %s: %d × %d × %d%n", name, dim1, dim2, dim3);
+        StringBuilder sb = new StringBuilder(1000);
+        sb.append("[\n");
+
+        for (int d1 = 0; d1 < dim1; d1++) {
+            if (d1 == 3) {
+                sb.append("  ...\n");
+                continue;
+            }
+            if (d1 >= 3 && d1 < dim1 - 3) {
+                continue;
+            }
+
+            sb.append("  [\n");
+            for (int d2 = 0; d2 < dim2; d2++) {
+                if (d2 == 3) {
+                    sb.append("    ...\n");
+                    continue;
+                }
+                if (d2 >= 3 && d2 < dim2 - 3) {
+                    continue;
+                }
+
+                sb.append("    [");
+                for (int d3 = 0; d3 < dim3; d3++) {
+                    if (d3 == 3) {
+                        sb.append(", ...");
+                        continue;
+                    }
+                    if (d3 >= 3 && d3 < dim3 - 3) {
+                        continue;
+                    }
+
+                    if (d3 > 0) {
+                        sb.append(", ");
+                    }
+
+                    sb.append(String.format("%.4f", x[d1].getFloat(d2 * dim3 + d3)));
+                }
+                sb.append("]\n");
+            }
+            sb.append("  ]\n");
+        }
+        sb.append("]\n");
+        System.out.print(sb.toString());
+    }
+
+    protected static void dump213(FloatTensor[] x, String name, int dim1, int dim2, int dim3) {
+        System.out.format("Tensor %s (perm 213): %d × %d × %d%n", name, dim2, dim1, dim3);
+        StringBuilder sb = new StringBuilder(1000);
+        sb.append("[\n");
+
+        for (int d2 = 0; d2 < dim2; d2++) {
+            if (d2 == 3) {
+                sb.append("  ...\n");
+                continue;
+            }
+            if (d2 >= 3 && d2 < dim2 - 3) {
+                continue;
+            }
+
+            sb.append("  [\n");
+            for (int d1 = 0; d1 < dim1; d1++) {
+                if (d1 == 3) {
+                    sb.append("    ...\n");
+                    continue;
+                }
+                if (d1 >= 3 && d1 < dim1 - 3) {
+                    continue;
+                }
+
+                sb.append("    [");
+                for (int d3 = 0; d3 < dim3; d3++) {
+                    if (d3 == 3) {
+                        sb.append(", ...");
+                        continue;
+                    }
+                    if (d3 >= 3 && d3 < dim3 - 3) {
+                        continue;
+                    }
+
+                    if (d3 > 0) {
+                        sb.append(", ");
+                    }
+
+                    //int idx = d1 * dim2 + d2;
+                    //int dt1 = idx / dim2;
+                    //int dt2 = idx % dim2;
+                    //int dt3 = d3;
+                    sb.append(String.format("%.4f", x[d1].getFloat(d2 * dim3 + d3)));
+                }
+                sb.append("]\n");
+            }
+            sb.append("  ]\n");
+        }
+        sb.append("]\n");
+        System.out.print(sb.toString());
+    }
+
 
     static Sampler selectSampler(int vocabularySize, float temperature, float topp, long rngSeed) {
         Sampler sampler;
@@ -285,8 +421,11 @@ public abstract class Llama<S extends StateBase, W> {
         public final int numberOfLayers; // number of layers
         public final int numberOfHeads; // number of query heads
         public final int numberOfKeyValueHeads; // number of key/value heads (can be < query heads because of multiquery)
+        public final int numberOfHeadsKey; // n_embd_head_k = n_embd / n_head; %s.attention.key_length
+        public final int numberOfHeadsValue; // n_embd_head_v = n_embd / n_head; %s.attention.value_length
         public final int vocabularySize; // vocabulary size, usually 256 (byte-level)
-        public final int contextLength; // max sequence length
+        public final int contextLengthModel; // max sequence length in model
+        public final int contextLength; // max sequence length to be generated
         public final boolean sharedWeights;
         public final float rmsNormEps;
         public final float ropeTheta;
@@ -296,18 +435,33 @@ public abstract class Llama<S extends StateBase, W> {
             if (newContextLength < 0) {
                 return this; // no change
             }
-            return new Configuration(this.modelGGUFName, this.dim, this.hiddenDim, this.numberOfLayers, this.numberOfHeads, this.numberOfKeyValueHeads, this.vocabularySize, newContextLength,
+            return new Configuration(this.modelGGUFName, this.dim, this.hiddenDim, this.numberOfLayers,
+                    this.numberOfHeads, this.numberOfKeyValueHeads, this.numberOfHeadsKey, this.numberOfHeadsValue,
+                    this.vocabularySize, this.contextLengthModel, newContextLength,
                     this.sharedWeights, this.rmsNormEps, this.ropeTheta);
         }
 
-        public Configuration(String modelGGUFName, int dim, int hiddenDim, int numberOfLayers, int numberOfHeads, int numberOfKeyValueHeads, int vocabularySize, int contextLength, boolean sharedWeights, float rmsNormEps, float ropeTheta) {
+        public Configuration(String modelGGUFName, int dim, int hiddenDim, int numberOfLayers,
+                int numberOfHeads, int numberOfKeyValueHeads,
+                int vocabularySize, int contextLengthModel, int contextLength, boolean sharedWeights, float rmsNormEps, float ropeTheta) {
+            this(modelGGUFName, dim, hiddenDim, numberOfLayers,
+                    numberOfHeads, numberOfKeyValueHeads, numberOfKeyValueHeads, numberOfKeyValueHeads,
+                    vocabularySize, contextLengthModel, contextLength, sharedWeights, rmsNormEps, ropeTheta);
+        }
+
+        public Configuration(String modelGGUFName, int dim, int hiddenDim, int numberOfLayers,
+                int numberOfHeads, int numberOfKeyValueHeads, int numberOfHeadsKey, int numberOfHeadsValue,
+                int vocabularySize, int contextLengthModel, int contextLength, boolean sharedWeights, float rmsNormEps, float ropeTheta) {
             this.modelGGUFName = modelGGUFName;
             this.dim = dim;
             this.hiddenDim = hiddenDim;
             this.numberOfLayers = numberOfLayers;
             this.numberOfHeads = numberOfHeads;
             this.numberOfKeyValueHeads = numberOfKeyValueHeads;
+            this.numberOfHeadsKey = numberOfHeadsKey;
+            this.numberOfHeadsValue = numberOfHeadsValue;
             this.vocabularySize = vocabularySize;
+            this.contextLengthModel = contextLengthModel;
             this.contextLength = contextLength;
             this.sharedWeights = sharedWeights;
             this.rmsNormEps = rmsNormEps;
@@ -376,6 +530,7 @@ public abstract class Llama<S extends StateBase, W> {
 
         // kv cache
         final int kvDim;
+        final int nEmbdGqa;
         public final FloatTensor[] keyCache; // (n_layer, seq_len, kv_dim)
         public final FloatTensor[] valueCache; // (n_layer, seq_len, kv_dim)
 
@@ -386,8 +541,19 @@ public abstract class Llama<S extends StateBase, W> {
             this.logits = ArrayFloatTensor.allocate(config.vocabularySize);
             
             this.kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
-            this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
-            this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
+            String modName = config.modelGGUFName.toLowerCase();
+            if (modName.contains("qwen3") || modName.contains("qwen-3")) {
+                int nHeadKv = config.numberOfKeyValueHeads; // n_head_kv = numberOfKeyValueHeads
+                int nEmbdHeadV = config.numberOfHeadsValue; // n_embd_head_v = n_embd / n_head; %s.attention.value_length
+                int nEmbdVGqa = nEmbdHeadV * nHeadKv; // n_embd_v_gqa = n_embd_head_v * n_head_kv
+                this.nEmbdGqa = nEmbdVGqa;
+                this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, nEmbdGqa)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
+                this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, nEmbdGqa)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
+            } else {
+                this.nEmbdGqa = kvDim;
+                this.keyCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
+                this.valueCache = Stream.generate(() -> ArrayFloatTensor.allocate(config.contextLength, kvDim)).limit(config.numberOfLayers).toArray(FloatTensor[]::new);
+            }
         }
     }
 
@@ -699,7 +865,7 @@ final class GGUF {
         readHeader(fileChannel); // gguf_header_t header;
         // Tensor infos, which can be used to locate the tensor data.
         // gguf_tensor_info_t tensor_infos[header.tensor_count];
-        this.tensorInfos = HashMap.newHashMap(tensorCount);
+        this.tensorInfos = new LinkedHashMap<>(tensorCount);
         for (int i = 0; i < tensorCount; ++i) {
             GGUF.GGUFTensorInfo ti = readTensorInfo(fileChannel);
             assert !tensorInfos.containsKey(ti.name);
@@ -724,7 +890,7 @@ final class GGUF {
         this.tensorDataOffset = fileChannel.position();
         Arena arena = Arena.ofAuto();
         this.tensorData = fileChannel.map(FileChannel.MapMode.READ_ONLY, tensorDataOffset, fileChannel.size() - tensorDataOffset, arena);
-        this.tensorEntries = HashMap.newHashMap(tensorInfos.size());
+        this.tensorEntries = new LinkedHashMap<>(tensorInfos.size());
         for (Map.Entry<String, GGUF.GGUFTensorInfo> entry : tensorInfos.entrySet()) {
             GGUF.GGUFTensorInfo ti = entry.getValue();
             int numberOfElements = FloatTensor.numberOfElements(ti.dimensions());
@@ -829,7 +995,7 @@ final class GGUF {
         this.metadata_kv_count = Math.toIntExact(readLong(fileChannel)); // uint64_t metadata_kv_count;
         // The metadata key-value pairs.
         // gguf_metadata_kv_t metadata_kv[metadata_kv_count];
-        this.metadata = HashMap.newHashMap(metadata_kv_count);
+        this.metadata = new LinkedHashMap<>(metadata_kv_count);
         for (int i = 0; i < metadata_kv_count; ++i) {
             Pair<String, Object> keyValue = readKeyValuePair(fileChannel);
             assert !metadata.containsKey(keyValue.first());
@@ -1028,9 +1194,17 @@ final class ModelLoader {
     }
 
     public static FloatTensor[] loadArrayOfQuantized(int size, IntFunction<GGMLTensorEntry> getTensorEntry) {
+        return loadArrayOfQuantized(size, getTensorEntry, false);
+    }
+
+    public static FloatTensor[] loadArrayOfQuantized(int size, IntFunction<GGMLTensorEntry> getTensorEntry, boolean isOptional) {
         FloatTensor[] array = new FloatTensor[size];
         for (int i = 0; i < size; i++) {
-            array[i] = loadQuantized(getTensorEntry.apply(i));
+            GGMLTensorEntry entry = getTensorEntry.apply(i);
+            if (entry == null && isOptional) {
+                continue;
+            }
+            array[i] = loadQuantized(entry);
         }
         return array;
     }
@@ -2003,6 +2177,10 @@ final class ArrayFloatTensor extends FloatTensor {
 }
 
 final class RoPE {
+    public static Pair<float[], float[]> precomputeFreqsCis(int contextLength, int headSize, double theta) {
+        return precomputeFreqsCis(contextLength, headSize, theta, false, 0, 0, 0, 0);
+    }
+
     public static Pair<float[], float[]> precomputeFreqsCis(int contextLength, int headSize, double theta,
         boolean ropeScaling, float scaleFactor, float loFreqFactor, float hiFreqFactor, float oldContextLength) {
         assert headSize % 2 == 0;

@@ -1,7 +1,7 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //JAVA 21+
 
-// Practical Qwen2 inference in a single Java file
+// Practical Qwen3 inference in a single Java file
 // Author: Alfonso² Peterssen
 // Based on Andrej Karpathy's llama2.c and minbpe projects
 // Also please check the sibling projects:
@@ -34,15 +34,15 @@ import org.rogmann.llmva4j.ChatFormat.Role;
 import org.rogmann.llmva4j.Llama.Options;
 import org.rogmann.llmva4j.Llama.StateBase;
 import org.rogmann.llmva4j.Llama.TokenDetails;
-import org.rogmann.llmva4j.Qwen2Llama.State;
-import org.rogmann.llmva4j.Qwen2Llama.Weights;
+import org.rogmann.llmva4j.Qwen3Llama.State;
+import org.rogmann.llmva4j.Qwen3Llama.Weights;
 
 /**
- * Java implementation of Qwen-2 model using Vector API.
+ * Java implementation of Qwen-3 model using Vector API.
  */
-public class Qwen2 {
+public class Qwen3 {
 
-    static void runInteractive(Qwen2Llama model, Sampler sampler, Options options) {
+    static void runInteractive(Qwen3Llama model, Sampler sampler, Options options) {
         State state = null;
         ChatFormat chatFormat = model.chatFormat();
         List<MessageWithTokens> conversation = new ArrayList<>();
@@ -128,7 +128,7 @@ public class Qwen2 {
         }
     }
 
-    static void runInstructOnce(Qwen2Llama model, Sampler sampler, Options options) {
+    static void runInstructOnce(Qwen3Llama model, Sampler sampler, Options options) {
         State state = model.createNewState(Llama.BATCH_SIZE);
         ChatFormat chatFormat = model.chatFormat();
         List<Integer> promptTokens = new ArrayList<>();
@@ -159,7 +159,7 @@ public class Qwen2 {
 
     public static void main(String[] args) throws IOException {
         Options options = Options.parseOptions(args);
-        Qwen2Llama model = Qwen2ModelLoader.loadModel(options.modelPath(), options.maxTokens());
+        Qwen3Llama model = Qwen3ModelLoader.loadModel(options.modelPath(), options.maxTokens());
         Sampler sampler = Llama.selectSampler(model.configuration().vocabularySize, options.temperature(), options.topp(), options.seed());
         if (options.serverPath() != null) {
             LlamaHttpServer.runHttpServer(model, sampler, options, options.serverHost(), options.serverPort());
@@ -171,21 +171,37 @@ public class Qwen2 {
     }
 }
 
-final class Qwen2ModelLoader {
-    private static final String TOKENIZER_QWEN2_7B_MODEL = "gpt2";
+final class Qwen3ModelLoader {
+    private static final String TOKENIZER_QWEN3_7B_MODEL = "gpt2";
 
     private static Vocabulary loadVocabulary(Map<String, Object> metadata) {
         String model = (String) metadata.get("tokenizer.ggml.model");
-        if (!TOKENIZER_QWEN2_7B_MODEL.equals(model)) {
-            throw new IllegalArgumentException("expected " + TOKENIZER_QWEN2_7B_MODEL + " but found " + model);
+        if (!TOKENIZER_QWEN3_7B_MODEL.equals(model)) {
+            throw new IllegalArgumentException("expected " + TOKENIZER_QWEN3_7B_MODEL + " but found " + model);
         }
         String[] tokens = (String[]) metadata.get("tokenizer.ggml.tokens");
         float[] scores = (float[]) metadata.get("tokenizer.ggml.scores");
         return new Vocabulary(tokens, scores);
     }
 
-    public static Qwen2Llama loadModel(Path ggufPath, int contextLength) throws IOException {
-        try (var ignored = Timer.log("Load Qwen2 model")) {
+    static String valueToString(Object o) {
+        if (o instanceof String s) {
+            String sEscaped = s.replace("\\",  "\\\\").replace("\n", "\\n");
+            return sEscaped.length() < 80 ? s : sEscaped.substring(0, 80) + "[...]";
+        }
+        if (o instanceof int[] arr) {
+            return arr.length < 10 ? Arrays.toString(arr) : Arrays.toString(Arrays.copyOfRange(arr, 0, 10)) + "[...]";
+        }
+        if (o instanceof String[] arr) {
+            return arr.length < 10 ? Arrays.toString(arr) : Arrays.toString(Arrays.copyOfRange(arr, 0, 10)) + "[...]";
+        }
+        if (o instanceof GGMLTensorEntry tensor) {
+            return String.format("GGMLTE Shape %s, Type %s", Arrays.toString(tensor.shape()), tensor.ggmlType());
+        }
+        return o.toString();
+    }
+    public static Qwen3Llama loadModel(Path ggufPath, int contextLength) throws IOException {
+        try (var ignored = Timer.log("Load Qwen3 model")) {
             GGUF gguf = GGUF.loadModel(ggufPath);
             Map<String, Object> metadata = gguf.getMetadata();
 
@@ -193,7 +209,7 @@ final class Qwen2ModelLoader {
             boolean isDeepSeekR1DistillQwen = "DeepSeek-R1-Distill-Qwen".equals(metadata.get("general.basename"));
             Tokenizer tokenizer = createTokenizer(metadata, vocabulary, isDeepSeekR1DistillQwen);
 
-            int modelContextLength = (int) metadata.get("qwen2.context_length");
+            int modelContextLength = (int) metadata.get("qwen3.context_length");
             if (contextLength < 0 || modelContextLength < contextLength) {
                 contextLength = modelContextLength;
             }
@@ -201,26 +217,27 @@ final class Qwen2ModelLoader {
             String modelName = ggufPath.getFileName().toString();
             Llama.Configuration config = new Llama.Configuration(
                     modelName,
-                    (int) metadata.get("qwen2.embedding_length"),
-                    (int) metadata.get("qwen2.feed_forward_length"),
-                    (int) metadata.get("qwen2.block_count"),
-                    (int) metadata.get("qwen2.attention.head_count"),
+                    (int) metadata.get("qwen3.embedding_length"),
+                    (int) metadata.get("qwen3.feed_forward_length"),
+                    (int) metadata.get("qwen3.block_count"),
+                    (int) metadata.get("qwen3.attention.head_count"),
 
-                    metadata.containsKey("qwen2.attention.head_count_kv")
-                            ? (int) metadata.get("qwen2.attention.head_count_kv")
-                            : (int) metadata.get("qwen2.attention.head_count"),
+                    metadata.containsKey("qwen3.attention.head_count_kv")
+                            ? (int) metadata.get("qwen3.attention.head_count_kv")
+                            : (int) metadata.get("qwen3.attention.head_count"),
+                   (int) metadata.get("qwen3.attention.key_length"),
+                   (int) metadata.get("qwen3.attention.value_length"),
 
                     vocabulary.size(),
                     modelContextLength, contextLength,
                     false,
-                    (float) metadata.get("qwen2.attention.layer_norm_rms_epsilon"),
-                    (float) metadata.get("qwen2.rope.freq_base")
+                    (float) metadata.get("qwen3.attention.layer_norm_rms_epsilon"),
+                    (float) metadata.get("qwen3.rope.freq_base")
             );
 
             Map<String, GGMLTensorEntry> tensorEntries = gguf.getTensorEntries();
 
-            Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLengthModel, config.headSize, config.ropeTheta,
-                    false, 8, 1, 3, 8192);
+            Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLengthModel, config.numberOfHeadsKey, config.ropeTheta);
             float[] ropeFreqsReal = ropeFreqs.first();
             float[] ropeFreqsImag = ropeFreqs.second();
 
@@ -232,12 +249,11 @@ final class Qwen2ModelLoader {
                     ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q.weight")),
                     ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.weight")),
                     ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.weight")),
-
-                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q.bias")),
-                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k.bias")),
-                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_v.bias")),
-
                     ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_output.weight")),
+
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_k_norm.weight")),
+                    ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".attn_q_norm.weight")),
+
                     ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_norm.weight")),
                     ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_gate.weight")), // w1
                     ModelLoader.loadArrayOfQuantized(config.numberOfLayers, i -> tensorEntries.get("blk." + i + ".ffn_down.weight")), // w2
@@ -250,15 +266,15 @@ final class Qwen2ModelLoader {
                             : tokenEmbeddingTable // weights are shared
             );
 
-            // Qwen2.5-Coder uses <|endoftext|> as stop-token.
+            // Qwen2.5-coder uses <|endoftext|> as stop-token.
             ChatTokens chatTokens = isDeepSeekR1DistillQwen ?
                     new ChatTokens( "<｜begin▁of▁sentence｜>", "", "", "<｜end▁of▁sentence｜>", "") :
                     new ChatTokens( "<|im_start|>", "<|im_end|>", "", "<|end_of_text|>", "<|endoftext|>");
-            return new Qwen2Llama(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw, chatTokens);
+            return new Qwen3Llama(ggufPath.getFileName().toString().replaceFirst("[.]gguf$", ""), config, tokenizer, qw, chatTokens);
         }
     }
 
-    private final static String QWEN2_PATTERN = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+    private final static String QWEN3_PATTERN = "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
     private static Tokenizer createTokenizer(Map<String, Object> metadata, Vocabulary vocabulary, boolean isDeepSeekR1DistillQwen) {
         int[] tokenTypes = (int[]) metadata.get("tokenizer.ggml.token_type");
@@ -291,17 +307,17 @@ final class Qwen2ModelLoader {
             specialTokens.remove("</think>");
         }
 
-        return new Tokenizer(vocabulary, merges, QWEN2_PATTERN, specialTokens, tokenTypes);
+        return new Tokenizer(vocabulary, merges, QWEN3_PATTERN, specialTokens, tokenTypes);
     }
 
 }
 
-class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
+class Qwen3Llama extends Llama<Qwen3Llama.State, Qwen3Llama.Weights> {
 
     private ChatTokens chatTokens;
 
-    public Qwen2Llama(String modelName, Configuration configuration, Tokenizer tokenizer, Weights weights, ChatTokens chatTokens) {
-        super(modelName, configuration, tokenizer, weights, new Qwen2ChatMLFormat(tokenizer, chatTokens));
+    public Qwen3Llama(String modelName, Configuration configuration, Tokenizer tokenizer, Weights weights, ChatTokens chatTokens) {
+        super(modelName, configuration, tokenizer, weights, new Qwen3ChatMLFormat(tokenizer, chatTokens));
         this.chatTokens = chatTokens;
     }
 
@@ -317,14 +333,13 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
         // weights for rmsnorms
         public final FloatTensor[] rms_att_weight; // (layer, dim) rmsnorm weights
         // weights for matmuls
-        public final FloatTensor[] wq; // (layer, n_heads * head_size)
-        public final FloatTensor[] wk; // (layer, n_kv_heads, head_size)
-        public final FloatTensor[] wv; // (layer, n_kv_heads * head_size)
-        public final FloatTensor[] wo; // (layer, n_heads * head_size, dim)
+        public final FloatTensor[] wq; // (layer, n_heads * head_size); {n_embd, n_embd_head_k * n_head}
+        public final FloatTensor[] wk; // (layer, n_kv_heads, head_size); {n_embd, n_embd_gqa}
+        public final FloatTensor[] wv; // (layer, n_kv_heads * head_size); {n_embd, n_embd_gqa}
+        public final FloatTensor[] wo; // (layer, n_heads * head_size, dim); {n_embd_head_k * n_head, n_embd}
 
-        public final FloatTensor[] q_bias; // (layer, dim)
-        public final FloatTensor[] k_bias; // (layer, kv_dim)
-        public final FloatTensor[] v_bias; // (layer, kv_dim)
+        public final FloatTensor[] attnKNorm; // (layer, n_embd_head_k);
+        public final FloatTensor[] attnQNorm; // (layer, n_embd_head_q);
 
         public final FloatTensor[] rms_ffn_weight; // (layer, dim)
         // weights for ffn
@@ -340,18 +355,19 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
         public final FloatTensor wcls; // (vocab_size, dim)
 
         public Weights(FloatTensor token_embedding_table, FloatTensor[] rms_att_weight,
-                FloatTensor[] wq, FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] q_bias, FloatTensor[] k_bias, FloatTensor[] v_bias, FloatTensor[] wo, FloatTensor[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, FloatTensor[] w3, FloatTensor rms_final_weight, FloatTensor freq_cis_real, FloatTensor freq_cis_imag, FloatTensor wcls) {
+                FloatTensor[] wq, FloatTensor[] wk, FloatTensor[] wv, FloatTensor[] wo,
+                FloatTensor[] attnKNorm, FloatTensor[] attnQNorm,
+                FloatTensor[] rms_ffn_weight, FloatTensor[] w1, FloatTensor[] w2, FloatTensor[] w3, FloatTensor rms_final_weight, FloatTensor freq_cis_real, FloatTensor freq_cis_imag, FloatTensor wcls) {
             this.token_embedding_table = token_embedding_table;
             this.rms_att_weight = rms_att_weight;
             this.wq = wq;
             this.wk = wk;
             this.wv = wv;
-
-            this.q_bias = q_bias;
-            this.k_bias = k_bias;
-            this.v_bias = v_bias;
-
             this.wo = wo;
+
+            this.attnKNorm = attnKNorm;
+            this.attnQNorm = attnQNorm;
+
             this.rms_ffn_weight = rms_ffn_weight;
             this.w1 = w1;
             this.w2 = w2;
@@ -375,31 +391,40 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
         public final FloatTensor[] k; // key (kvDim,)
         public final FloatTensor[] v; // value (kvDim,)
         public final FloatTensor[] att; // buffer for scores/attention values (n_heads, seq_len)
+        public final FloatTensor[] kq; // key (kvDim,)
 
         State(Configuration config, int batchsize) {
             super(config, batchsize);
 
+            int nHeadKv = config.numberOfKeyValueHeads; // n_head_kv = numberOfKeyValueHeads
+            int nEmbdHeadK = config.numberOfHeadsKey; // n_embd_head_k = n_embd / n_head; %s.attention.key_length
+            int nEmbdKGqa = nEmbdHeadK * nHeadKv; // n_embd_k_gqa = n_embd_head_k * n_head_kv
             this.x = Llama.allocate(batchsize, config.dim);
-            this.xb = Llama.allocate(batchsize, config.dim);
+            this.xb = Llama.allocate(batchsize, nEmbdHeadK * config.numberOfHeads);
             this.xb2 = Llama.allocate(batchsize, config.dim);
             this.hb = Llama.allocate(batchsize, config.hiddenDim);
             this.hb2 = Llama.allocate(batchsize, config.hiddenDim);
-            this.q = Llama.allocate(batchsize, config.dim);
-            this.k = Llama.allocate(batchsize, kvDim);
-            this.v = Llama.allocate(batchsize, kvDim);
+            this.q = Llama.allocate(batchsize, nEmbdHeadK * config.numberOfHeads);
+            this.k = Llama.allocate(batchsize, nEmbdKGqa);
+            this.v = Llama.allocate(batchsize, nEmbdKGqa);
+            this.kq = Llama.allocate(batchsize, config.numberOfHeads, 32, 15);
             this.att = Llama.allocate(batchsize, config.numberOfHeads, config.contextLength);
         }
     }
 
-    static void rmsnorm(FloatTensor out, FloatTensor x, FloatTensor weight, int size, float rmsNormEps) {
+    static void rmsnorm(FloatTensor out, FloatTensor x, FloatTensor weight, int offset, int size, float rmsNormEps) {
+        if (offset + size > out.size() || offset + size > x.size() || size > weight.size()) {
+            throw new IllegalArgumentException(String.format("rmsnorm: out.size=%d, x.size=%d, weight.size=%d, offset=%d, size=%d",
+                    out.size(), x.size(), weight.size(), offset, size));
+        }
         // calculate sum of squares
-        float ss = x.reduce(0, size, 0f, (acc, xi) -> acc + xi * xi);
+        float ss = x.reduce(offset, size, 0f, (acc, xi) -> acc + xi * xi);
         ss /= size;
         ss += rmsNormEps;
         ss = (float) (1.0 / Math.sqrt(ss));
         // normalize and scale
         final float finalss = ss; // for the lambda
-        out.mapWithIndexInPlace(0, size, (value, index) -> weight.getFloat(index) * (finalss * x.getFloat(index)));
+        out.mapWithIndexInPlace(offset, size, (value, index) -> weight.getFloat(index % size) * (finalss * x.getFloat(index)));
     }
 
     public FloatTensor forward(State state, int[] tokens, int position, boolean computeLogits, AttentionConsumer attentionConsumer) {
@@ -407,10 +432,15 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
         Llama.Configuration config = configuration();
         Weights weights = weights();
         int dim = config.dim;
-        int headSize = config.headSize;
-        int kvDim = (config.dim * config.numberOfKeyValueHeads) / config.numberOfHeads;
-        int kvMul = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
-        float sqrtHeadSize = (float) Math.sqrt(headSize);
+        int nHeadKv = config.numberOfKeyValueHeads; // n_head_kv = numberOfKeyValueHeads
+        int nEmbdHeadK = config.numberOfHeadsKey; // n_embd_head_k = n_embd / n_head; %s.attention.key_length
+        int nEmbdHeadV = config.numberOfHeadsValue; // n_embd_head_v = n_embd / n_head; %s.attention.value_length
+        //int nEmbdKGqa = nEmbdHeadK * nHeadKv; // n_embd_k_gqa = n_embd_head_k * n_head_kv
+        int nEmbdVGqa = nEmbdHeadV * nHeadKv; // n_embd_v_gqa = n_embd_head_v * n_head_kv
+        int nEmbdHead = nEmbdHeadV;
+        int nEmbdGqa = nEmbdVGqa;
+        int gqa = config.numberOfHeads / config.numberOfKeyValueHeads; // integer multiplier of the kv sharing in multiquery
+        float sqrtHeadSize = (float) Math.sqrt(nEmbdHead);
 
         // We need states at each token.
         final int nTokens = tokens.length;
@@ -425,45 +455,41 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
             // attention rmsnorm
             final int curLayer = l;
             Parallel.parallelFor(0, nTokens, t ->
-                rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight[curLayer], dim, config.rmsNormEps)
+                rmsnorm(state.xb[t], state.x[t], weights.rms_att_weight[curLayer], 0, dim, config.rmsNormEps)
             );
 
             // qkv matmuls for this position
-            weights.wq[l].matmul(nTokens, state.xb, state.q, dim, dim);
-            weights.wk[l].matmul(nTokens, state.xb, state.k, kvDim, dim);
-            weights.wv[l].matmul(nTokens, state.xb, state.v, kvDim, dim);
-            if ((weights.q_bias != null && weights.q_bias[curLayer] != null)
-                || (weights.k_bias != null && weights.k_bias[curLayer] != null)
-                || (weights.v_bias != null && weights.v_bias[curLayer] != null)) {
-                Parallel.parallelFor(0, nTokens, t -> {
-                    if (weights.q_bias != null && weights.q_bias[curLayer] != null) {
-                        state.q[t].addInPlace(weights.q_bias[curLayer]);
-                    }
-                    if (weights.k_bias != null && weights.k_bias[curLayer] != null) {
-                        state.k[t].addInPlace(weights.k_bias[curLayer]);
-                    }
-                    if (weights.v_bias != null && weights.v_bias[curLayer] != null) {
-                        state.v[t].addInPlace(weights.v_bias[curLayer]);
-                    }
-                });
-            }
+            weights.wq[l].matmul(nTokens, state.xb, state.q, nEmbdHeadK * config.numberOfHeads, dim);
+            weights.wk[l].matmul(nTokens, state.xb, state.k, nEmbdGqa, dim);
+            weights.wv[l].matmul(nTokens, state.xb, state.v, nEmbdGqa, dim);
+
+            Parallel.parallelFor(0, nTokens, t -> {
+                // Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                for (int i = 0; i < config.numberOfHeads; i++) {
+                    rmsnorm(state.q[t], state.q[t], weights.attnQNorm[curLayer], i * nEmbdHead, nEmbdHead, config.rmsNormEps);
+                }
+                // Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                for (int i = 0; i < config.numberOfKeyValueHeads; i++) {
+                    rmsnorm(state.k[t], state.k[t], weights.attnKNorm[curLayer], i * nEmbdHead, nEmbdHead, config.rmsNormEps);
+                }
+            });
 
             // RoPE relative positional encoding: complex-valued rotate q and k in each head
             // GPT-NeoX style RoPE, real/imaginary components are stored with a headSize/2 offset per head, instead of consecutive.
             Parallel.parallelFor(0, nTokens, t -> {
                 for (int h = 0; h < config.numberOfHeads; ++h) {
                     int rotn = h < config.numberOfKeyValueHeads ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
-                    int poffset = h * headSize;
-                    for (int i0 = 0; i0 < headSize; i0 += 2) {
-                        int ic = i0 / 2;
-                        float fcr = weights.freq_cis_real.getFloat((position + t) * (headSize / 2) + ic);
-                        float fci = weights.freq_cis_imag.getFloat((position + t) * (headSize / 2) + ic);
+                    int poffset = h * nEmbdHead;
+                    int nComplEmbdHead = nEmbdHead / 2;
+                    for (int ic = 0; ic < nComplEmbdHead; ic++) {
+                        float fcr = weights.freq_cis_real.getFloat((position + t) * nComplEmbdHead + ic);
+                        float fci = weights.freq_cis_imag.getFloat((position + t) * nComplEmbdHead + ic);
                         for (int vi = 0; vi < rotn; vi++) {
                             FloatTensor vec = (vi == 0) ? state.q[t] : state.k[t]; // the vector to rotate (query or key)
                             float v0 = vec.getFloat(poffset + ic);
-                            float v1 = vec.getFloat(poffset + ic + headSize/2);
+                            float v1 = vec.getFloat(poffset + ic + nComplEmbdHead);
                             vec.setFloat(poffset + ic, v0 * fcr - v1 * fci);
-                            vec.setFloat(poffset + ic + headSize/2, v0 * fci + v1 * fcr);
+                            vec.setFloat(poffset + ic + nComplEmbdHead, v0 * fci + v1 * fcr);
                         }
                     }
                 }
@@ -472,8 +498,8 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
             // save key,value at this time step (position) to our kv cache
             //int loff = l * config.seq_len * kvDim; // kv cache layer offset for convenience
             Parallel.parallelFor(0, nTokens, t -> {
-                state.k[t].copyTo(0, state.keyCache[curLayer], (position + t) * kvDim, kvDim);
-                state.v[t].copyTo(0, state.valueCache[curLayer], (position + t) * kvDim, kvDim);
+                state.k[t].copyTo(0, state.keyCache[curLayer], (position + t) * nEmbdGqa, nEmbdGqa);
+                state.v[t].copyTo(0, state.valueCache[curLayer], (position + t) * nEmbdGqa, nEmbdGqa);
             });
 
             // multihead attention. iterate over all heads
@@ -482,7 +508,7 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
                 int h = (int) (ht % config.numberOfHeads);
                 // get the query vector for this head
                 // float* q = s.q + h * headSize;
-                int qOffset = h * headSize;
+                int qOffset = h * nEmbdHead;
 
                 // attention scores for this head
                 // float* att = s.att + h * config.seq_len;
@@ -492,9 +518,10 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
                 for (int t = 0; t <= position + idxToken; t++) {
                     // get the key vector for this head and at this timestep
                     // float* k = s.key_cache + loff + t * dim + h * headSize;
-                    int keyCacheOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
+                    int keyCacheOffset = /* loff + */ t * nEmbdGqa + (h / gqa) * nEmbdHead;
                     // calculate the attention score as the dot product of q and k
-                    float score = state.q[idxToken].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, headSize);
+                    float score = state.q[idxToken].dot(qOffset, state.keyCache[curLayer], keyCacheOffset, nEmbdHeadK);
+                    state.kq[idxToken].setFloat(h * nTokens + t, score);
                     score /= sqrtHeadSize;
                     // save the score to the attention buffer
                     state.att[idxToken].setFloat(attOffset + t, score);
@@ -505,7 +532,7 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
                 
                 // Optional analysis of the attention.
                 if (attentionConsumer != null) {
-                    int vOffsetBase = (h / kvMul) * headSize;
+                    int vOffsetBase = (h / gqa) * nEmbdHeadV;
                     attentionConsumer.accept(position + idxToken, curLayer, h,
                             state.att[idxToken], attOffset, position + idxToken + 1,
                             state.valueCache[curLayer], vOffsetBase);
@@ -513,23 +540,22 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
 
                 // weighted sum of the values, store back into xb
                 // float* xb = s.xb + h * headSize;
-                int xbOffset = h * headSize;
+                int xbOffset = h * nEmbdHeadV;
                 // memset(xb, 0, headSize * sizeof(float));
-                state.xb[idxToken].fillInPlace(xbOffset, headSize, 0f);
+                state.xb[idxToken].fillInPlace(xbOffset, nEmbdHeadV, 0f);
 
                 for (int t = 0; t <= position + idxToken; t++) {
                     // get the value vector for this head and at this timestep
                     // float* v = s.value_cache + loff + t * dim + h * headSize;C
-                    int vOffset = /* loff + */ t * kvDim + (h / kvMul) * headSize;
+                    int vOffset = /* loff + */ t * nEmbdGqa + (h / gqa) * nEmbdHeadV;
                     // get the attention weight for this timestep
                     float a = state.att[idxToken].getFloat(attOffset + t);
                     // accumulate the weighted value into xb
-                    state.xb[idxToken].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, headSize, a);
+                    state.xb[idxToken].saxpyInPlace(xbOffset, state.valueCache[curLayer], vOffset, nEmbdHeadV, a);
                 }
             });
-
             // final matmul to get the output of the attention
-            weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, dim);
+            weights.wo[l].matmul(nTokens, state.xb, state.xb2, dim, nEmbdHeadK * config.numberOfHeads);
 
             // residual connection back into x
             Parallel.parallelFor(0, nTokens, t -> {
@@ -538,7 +564,7 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
 
             // ffn rmsnorm
             Parallel.parallelFor(0, nTokens, t -> {
-                rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight[curLayer], dim, config.rmsNormEps);
+                rmsnorm(state.xb[t], state.x[t], weights.rms_ffn_weight[curLayer], 0, dim, config.rmsNormEps);
             });
 
             // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -566,7 +592,7 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
 
         // final rmsnorm
         Parallel.parallelFor(0, nTokens, t -> {
-            rmsnorm(state.x[t], state.x[t], weights.rms_final_weight, dim, config.rmsNormEps);
+            rmsnorm(state.x[t], state.x[t], weights.rms_final_weight, 0, dim, config.rmsNormEps);
         });
 
         // classifier into logits
@@ -580,7 +606,7 @@ class Qwen2Llama extends Llama<Qwen2Llama.State, Qwen2Llama.Weights> {
 /**
  * Utility tailored for the Chat Markup Language (ChatML) prompt format.
  */
-class Qwen2ChatMLFormat extends ChatFormat {
+class Qwen3ChatMLFormat extends ChatFormat {
 
     protected final int imStart; // beginOfText
     protected final int imEnd; // endOfText
@@ -589,7 +615,7 @@ class Qwen2ChatMLFormat extends ChatFormat {
     protected final int fimSuffix;
     protected final int fimMiddle;
 
-    public Qwen2ChatMLFormat(Tokenizer tokenizer, ChatTokens chatTokens) {
+    public Qwen3ChatMLFormat(Tokenizer tokenizer, ChatTokens chatTokens) {
         super(tokenizer, "", chatTokens.tStartHeader(), chatTokens.tEndHeader(), chatTokens.tEndOfTurn(), chatTokens.tEndOfText(), "", chatTokens.tEndOfTextFim());
 
         imStart = super.startHeader;

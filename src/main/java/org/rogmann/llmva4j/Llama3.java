@@ -363,7 +363,7 @@ final class Llama3ModelLoader {
                             : (int) metadata.get("llama.attention.head_count"),
 
                     vocabulary.size(),
-                    contextLength,
+                    modelContextLength, contextLength,
                     false,
                     (float) metadata.getOrDefault("llama.attention.layer_norm_rms_epsilon", 1e-5f),
                     (float) metadata.getOrDefault("llama.rope.freq_base", 10000f)
@@ -374,7 +374,7 @@ final class Llama3ModelLoader {
             float loFreqFactor = 1;
             float hiFreqFactor = 3;
             int oldContextLength = 8192;
-            Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta,
+            Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLengthModel, config.headSize, config.ropeTheta,
                     ropeScaling, scaleFactor, loFreqFactor, hiFreqFactor, oldContextLength);
             float[] ropeFreqsReal = ropeFreqs.first();
             float[] ropeFreqsImag = ropeFreqs.second();

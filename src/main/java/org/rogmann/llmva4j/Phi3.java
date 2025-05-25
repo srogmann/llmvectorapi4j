@@ -204,7 +204,7 @@ public class Phi3 {
                                 : (int) metadata.get(modelPrefix + "attention.head_count"),
 
                         vocabulary.size(),
-                        contextLength,
+                        modelContextLength, contextLength,
                         false,
                         (float) metadata.getOrDefault(modelPrefix + "attention.layer_norm_rms_epsilon", 1e-5f),
                         (float) metadata.getOrDefault(modelPrefix + "rope.freq_base", 10000f)
@@ -212,7 +212,7 @@ public class Phi3 {
 
                 Map<String, GGMLTensorEntry> tensorEntries = gguf.getTensorEntries();
 
-                Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLength, config.headSize, config.ropeTheta,
+                Pair<float[], float[]> ropeFreqs = RoPE.precomputeFreqsCis(config.contextLengthModel, config.headSize, config.ropeTheta,
                         false, 8, 1, 3, 8192);
                 float[] ropeFreqsReal = ropeFreqs.first();
                 float[] ropeFreqsImag = ropeFreqs.second();
