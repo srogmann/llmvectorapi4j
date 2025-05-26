@@ -302,10 +302,8 @@ final class Qwen3ModelLoader {
                                 i -> specialTokensList.get(i),
                                 i -> baseTokens + i)
                         );
-        if (isDeepSeekR1DistillQwen) {
-            specialTokens.remove("<think>");
-            specialTokens.remove("</think>");
-        }
+        specialTokens.remove("<think>");
+        specialTokens.remove("</think>");
 
         return new Tokenizer(vocabulary, merges, QWEN3_PATTERN, specialTokens, tokenTypes);
     }
