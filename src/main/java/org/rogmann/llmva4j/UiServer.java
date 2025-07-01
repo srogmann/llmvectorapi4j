@@ -11,54 +11,84 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.Map.Entry;
+import java.util.ServiceLoader;
+import java.util.logging.Logger;
 import java.util.zip.GZIPInputStream;
+
+import org.rogmann.llmva4j.mcp.McpHttpClient;
+import org.rogmann.llmva4j.mcp.McpHttpClient.McpToolWithUri;
+import org.rogmann.llmva4j.mcp.McpToolClientService;
+import org.rogmann.llmva4j.mcp.McpToolInterface;
+import org.rogmann.llmva4j.mcp.McpToolPropertyDescription;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 /**
- * Simple webserver for providing a web interface for an OpenAI-chat/completions-compatible LLM-API endpoint.
+ * Simple web-server for providing a web interface for an OpenAI-chat/completions-compatible LLM-API endpoint.
  */
 public class UiServer {
+    /** logger */
+    private static final Logger LOG = Logger.getLogger(UiServer.class.getName());
+
+    /**
+     * Entry method, starts a web-server.
+     * @param args UiServer &lt;server-ip&gt; &lt;server-port&gt; &lt;llm-url&gt; &lt;public-path&gt;
+     */
     public static void main(String[] args) {
         if (args.length != kNumArgs) {
             System.out.println("Usage: java UiServer <server-ip> <server-port> <llm-url> <public-path>");
-            return;
+            System.exit(1);
         }
 
         String host = args[0];
         int port = Integer.parseInt(args[1]);
         String llmUrl = args[2];
         String publicPath = args[3];
+        if (!new File(publicPath).isDirectory()) {
+            throw new IllegalArgumentException("Missing path directory (web-content): " + publicPath);
+        }
 
-        startServer(host, port, llmUrl, publicPath);
+        McpHttpClient mcpClient = new McpHttpClient();
+        ServiceLoader<McpToolClientService> loaderTools = ServiceLoader.load(McpToolClientService.class);
+        for (McpToolClientService action : loaderTools) {
+            McpToolWithUri toolWithUri = action.provide();
+            McpToolInterface tool = toolWithUri.tool();
+            LOG.info(String.format("Register tool: %s at %s", tool.name(), toolWithUri.url()));
+            mcpClient.registerTool(toolWithUri);
+        }
+
+        startServer(host, port, llmUrl, publicPath, mcpClient);
     }
 
     private static final int kNumArgs = 4;
 
-    private static void startServer(String host, int port, String llmUrl, String publicPath) {
+    private static void startServer(String host, int port, String llmUrl, String publicPath, McpHttpClient mcpClient) {
         try {
-            var addr = new java.net.InetSocketAddress(host, port);
+            var addr = new InetSocketAddress(host, port);
             var server = HttpServer.create(addr, 0);
-            server.createContext("/", exchange -> handleRequest(exchange, llmUrl, publicPath));
+            server.createContext("/", exchange -> handleRequest(exchange, llmUrl, publicPath, mcpClient));
             server.setExecutor(null); // use default executor
             server.start();
-            System.out.println("Server started on " + host + ":" + port);
+            LOG.info("Server started on " + host + ":" + port);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    private static void handleRequest(HttpExchange exchange, String llmUrl, String publicPath) {
+    private static void handleRequest(HttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient) {
         System.out.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI());
         if ("GET".equals(exchange.getRequestMethod())) {
             processGetRequest(exchange, publicPath);
@@ -71,80 +101,227 @@ public class UiServer {
         }
 
         try {
-            var br = new java.io.BufferedReader(new java.io.InputStreamReader(exchange.getRequestBody()));
-            var jsonBody = new StringBuilder();
-            while (true) {
-                String line = br.readLine();
-                if (line == null) {
-                    break;
+            String httpRequestBody;
+            try (var is = exchange.getRequestBody();
+                    var isr = new InputStreamReader(is);
+                    var br = new BufferedReader(isr)) {
+
+                var jsonBody = new StringBuilder();
+                while (true) {
+                    String line = br.readLine();
+                    if (line == null) {
+                        break;
+                    }
+                    LOG.fine("< " + line);
+                    jsonBody.append(line);
                 }
-                System.out.println("< " + line);
-                jsonBody.append(line);
+                httpRequestBody = jsonBody.toString();
             }
 
             // Parse incoming JSON
-            var requestMap = LightweightJsonHandler.parseJsonDict(jsonBody.toString());
-            var messages = getJsonArrayDicts(requestMap, "messages");
+            var requestMap = LightweightJsonHandler.parseJsonDict(httpRequestBody);
+            var messages = LightweightJsonHandler.getJsonArrayDicts(requestMap, "messages");
+            var messagesWithTools = new ArrayList<>(messages);
 
-            // Build request for LLM
-            var llmRequest = new HashMap<String, Object>();
-            llmRequest.put("messages", messages);
-            llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
-            llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
-            llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
-            llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
-            
-            var sbRequest = new StringBuilder(200);
-            LightweightJsonHandler.dumpJson(sbRequest, llmRequest);
-
-            // Send request to LLM
-            URL url = new URI(llmUrl).toURL();
-            try {
-                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("POST");
-                connection.setRequestProperty("Content-Type", "application/json");
-                connection.setRequestProperty("Accept", "application/json");
-                connection.setDoOutput(true);
-
-                try (OutputStream os = connection.getOutputStream();
-                        OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
-                    osw.write(sbRequest.toString());
+            boolean hasToolResponse = false;
+            String uiResponse = null;
+            do {
+                // Build request for LLM
+                var llmRequest = new HashMap<String, Object>();
+                final List<Map<String, Object>> listOpenAITools = convertMcp2OpenAI(mcpClient.getTools());
+                if (!listOpenAITools.isEmpty()) {
+                    llmRequest.put("tools", listOpenAITools);
                 }
+                LOG.fine(String.format("llm.messages-out: %s", messagesWithTools));
+                llmRequest.put("messages", messagesWithTools);
+                llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
+                llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
+                llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
+                llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
 
-                int responseCode = connection.getResponseCode();
-                if (responseCode != HttpURLConnection.HTTP_OK) {
-                    System.err.format("%s HTTP-error accessing %s: %s - %s%n", LocalDateTime.now(),
-                            url, responseCode, connection.getResponseMessage());
-                    return;
+                var sbRequest = new StringBuilder(200);
+                LightweightJsonHandler.dumpJson(sbRequest, llmRequest);
+                var requestOut = sbRequest.toString().replace("\"stream\":true", "\"stream\":false");
+                LOG.fine(String.format("Request out: " + requestOut));
+
+                // Send request to LLM
+                URL url = new URI(llmUrl).toURL();
+                try {
+                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestMethod("POST");
+                    connection.setRequestProperty("Content-Type", "application/json");
+                    connection.setRequestProperty("Accept", "application/json");
+                    connection.addRequestProperty("Accept", "text/event-stream");
+                    connection.setDoOutput(true);
+
+                    try (OutputStream os = connection.getOutputStream();
+                            OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
+                        osw.write(requestOut);
+                    }
+
+                    int responseCode = connection.getResponseCode();
+                    if (responseCode != HttpURLConnection.HTTP_OK) {
+                        System.err.format("%s HTTP-error accessing %s: %s - %s%n", LocalDateTime.now(),
+                                url, responseCode, connection.getResponseMessage());
+                        return;
+                    }
+                    LOG.fine("Content-Type: " + connection.getContentType());
+
+                    // Read the response in chunks
+                    hasToolResponse = false;
+                    String sResponse;
+                    try (InputStream inputStream = connection.getInputStream();
+                            InputStreamReader isr = new InputStreamReader(inputStream)) {
+                       final StringBuilder sb = new StringBuilder(500);
+                       char[] cBuf = new char[4096];
+                       while (true) {
+                           int len = isr.read(cBuf);
+                           if (len == -1) {
+                               break;
+                           }
+                           sb.append(cBuf, 0, len);
+                       }
+                       sResponse = sb.toString();
+                   }
+                   LOG.fine("Response: " + sResponse);
+                   if (!listOpenAITools.isEmpty()) {
+                       // Check for a tool-call.
+                       Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(sResponse);
+                       List<Map<String, Object>> listChoices = LightweightJsonHandler.getJsonArrayDicts(mapResponse, "choices");
+                       if (listChoices != null && !listChoices.isEmpty()) {
+                           @SuppressWarnings("unchecked")
+                           Map<String, Object> mapMessage = LightweightJsonHandler.getJsonValue(listChoices.get(0), "message", Map.class);
+                           if (mapMessage != null) {
+                               List<Map<String, Object>> listToolCalls = LightweightJsonHandler.getJsonArrayDicts(mapMessage, "tool_calls");
+                               if (listToolCalls != null && !listToolCalls.isEmpty()) {
+                                   for (Map<String, Object> mapToolCall : listToolCalls) {
+                                       String type = LightweightJsonHandler.getJsonValue(mapToolCall, "type", String.class);
+                                       if (!"function".equals(type)) {
+                                           throw new RuntimeException("Unexpected tool_call: " + mapToolCall);
+                                       }
+                                       @SuppressWarnings("unchecked")
+                                       Map<String, Object> mapFunction = LightweightJsonHandler.getJsonValue(mapToolCall, "function", Map.class);
+                                       String functionName = LightweightJsonHandler.getJsonValue(mapFunction, "name", String.class);
+                                       String arguments = LightweightJsonHandler.getJsonValue(mapFunction, "arguments", String.class);
+                                       String id = LightweightJsonHandler.getJsonValue(mapToolCall, "id", String.class);
+                                       Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
+                                       Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id);
+                                       LOG.info("Tool-Result_: " + toolResult);
+                                       @SuppressWarnings("unchecked")
+                                       List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);
+                                       String text = null;
+                                       if (!aToolContent.isEmpty()) {
+                                           Map<String, Object> mapFirstContent = aToolContent.get(0);
+                                           text = LightweightJsonHandler.getJsonValue(mapFirstContent, "text", String.class);
+                                       }
+                                       hasToolResponse = true;
+                                       messagesWithTools.add(mapMessage);
+                                       Map<String, Object> mapToolResponse = new LinkedHashMap<>();
+                                       mapToolResponse.put("role", "tool");
+                                       mapToolResponse.put("content", text);
+                                       mapToolResponse.put("tool_call_id", id);
+                                       messagesWithTools.add(mapToolResponse);
+                                       LOG.fine(String.format("Next messages: %s", messagesWithTools));
+                                   }
+                               }
+                           }
+                       }
+                   }
+                   uiResponse = sResponse;
+
+                } catch (IOException e) {
+                    System.err.format("%s IO-error", LocalDateTime.now(), e.getMessage());
+                    e.printStackTrace();
                 }
+            } while (hasToolResponse);
 
-                // Read the response in chunks
-                try (InputStream inputStream = connection.getInputStream();
-                         BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
-                    exchange.sendResponseHeaders(200, 0);
-                    try (OutputStream os = exchange.getResponseBody();
-                            OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8);
-                            BufferedWriter bw = new BufferedWriter(osw)) {
-                        while (true) {
-                            String line = reader.readLine();
-                            if (line == null) {
-                                break;
-                            }
-                            System.out.println("> " + line);
-                            bw.write(line); bw.write((char) '\n');
-                            bw.flush();
-                        }
+            if (uiResponse != null) {
+                Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(uiResponse);
+                List<Map<String, Object>> listChoices = LightweightJsonHandler.getJsonArrayDicts(mapResponse, "choices");
+                if (listChoices != null && !listChoices.isEmpty()) {
+                    Map<String, Object> choice = listChoices.get(0);
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> mapMessage = LightweightJsonHandler.getJsonValue(choice, "message", Map.class);
+                    if (mapMessage != null) {
+                        choice.put("delta", mapMessage);
+                        var sb = new StringBuilder(500);
+                        LightweightJsonHandler.dumpJson(sb, mapResponse);
+                        uiResponse = sb.toString();
                     }
                 }
-            } catch (IOException e) {
-                System.err.format("%s IO-error", LocalDateTime.now(), e.getMessage());
-                e.printStackTrace();
+                LOG.fine(String.format("UI-response: %s", uiResponse));
+                exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
+                exchange.sendResponseHeaders(200, 0);
+                try (OutputStream os = exchange.getResponseBody();
+                        OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
+                    String sseResponse = String.format("data: %s\n\ndata: [DONE]\n\n", uiResponse);
+                    osw.write(sseResponse);
+                }
+            } else {
+                sendError(exchange, 500, "No UI-response");
             }
 
         } catch (Exception e) {
             sendError(exchange, 500, "Internal server error: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Reads a response of the HTTP-connection and streams it to the HTTP-exchange.
+     * @param exchange HTTP-exchange
+     * @param connection HTTP-connection
+     * @throws IOException in case of a network error
+     */
+    static void streamResponse(HttpExchange exchange, HttpURLConnection connection) throws IOException {
+        try (InputStream inputStream = connection.getInputStream();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream os = exchange.getResponseBody();
+                    OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8);
+                    BufferedWriter bw = new BufferedWriter(osw)) {
+                while (true) {
+                    String line = reader.readLine();
+                    if (line == null) {
+                        break;
+                    }
+                    LOG.fine("> " + line);
+                    bw.write(line); bw.write((char) '\n');
+                    bw.flush();
+                }
+            }
+        }
+    }
+
+    private static List<Map<String, Object>> convertMcp2OpenAI(List<McpToolInterface> listMcpTools) {
+        List<Map<String, Object>> listOpenAITools = new ArrayList<>();
+        for (McpToolInterface mcpTool : listMcpTools) {
+            Map<String, Object> tool = new LinkedHashMap<>();
+            tool.put("type", "function");
+            Map<String, Object> function = new LinkedHashMap<>();
+            function.put("name", mcpTool.name());
+            function.put("description", mcpTool.description());
+            Map<String, Object> parameters = new LinkedHashMap<>();
+            parameters.put("type", "object");
+            Map<String, Object> properties = new LinkedHashMap<>();
+            for (Entry<String, McpToolPropertyDescription> entry : mcpTool.inputSchema().properties().entrySet()) {
+                Map<String, Object> mapProp = new LinkedHashMap<>();
+                mapProp.put("type", entry.getValue().type());
+                mapProp.put("description", entry.getValue().description());
+                if (entry.getValue().itemsType() != null) {
+                    var mapItems = new LinkedHashMap<>();
+                    mapItems.put("type", entry.getValue().itemsType());
+                    mapProp.put("items", mapItems);
+                }
+                properties.put(entry.getKey(), mapProp);
+            }
+            parameters.put("properties", properties);
+            function.put("parameters", parameters);
+            function.put("required", mcpTool.inputSchema().required());
+            tool.put("function", function);
+            listOpenAITools.add(tool);
+        }
+        return listOpenAITools;
     }
 
     private static void processGetRequest(HttpExchange exchange, String publicPath) {
@@ -242,21 +419,4 @@ public class UiServer {
         }
     }
 
-    // Utility methods from original code
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> getJsonArrayDicts(Map<String, Object> map, String key) {
-        var list = (List<?>) map.get(key);
-        if (list == null) return null;
-        return list.stream()
-                .filter(o -> o instanceof Map)
-                .map(o -> (Map<String, Object>) o)
-                .collect(Collectors.toList());
-    }
-
-    // LightweightJsonHandler extension
-    public static String serializeToJson(Map<String, Object> map) {
-        var sb = new StringBuilder();
-        LightweightJsonHandler.dumpJson(sb, map);
-        return sb.toString();
-    }
 }
