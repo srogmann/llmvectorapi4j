@@ -12,6 +12,7 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -23,13 +24,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.ServiceLoader;
 import java.util.logging.Logger;
+import java.util.stream.IntStream;
 import java.util.zip.GZIPInputStream;
 
 import org.rogmann.llmva4j.mcp.McpHttpClient;
 import org.rogmann.llmva4j.mcp.McpHttpClient.McpToolWithUri;
-import org.rogmann.llmva4j.mcp.McpToolClientService;
 import org.rogmann.llmva4j.mcp.McpToolInterface;
 import org.rogmann.llmva4j.mcp.McpToolPropertyDescription;
 
@@ -48,8 +48,8 @@ public class UiServer {
      * @param args UiServer &lt;server-ip&gt; &lt;server-port&gt; &lt;llm-url&gt; &lt;public-path&gt;
      */
     public static void main(String[] args) {
-        if (args.length != kNumArgs) {
-            System.out.println("Usage: java UiServer <server-ip> <server-port> <llm-url> <public-path>");
+        if (args.length < 4) {
+            System.out.println("Usage: java UiServer <server-ip> <server-port> <llm-url> <public-path> [<mcp-server-url>]*");
             System.exit(1);
         }
 
@@ -60,20 +60,26 @@ public class UiServer {
         if (!new File(publicPath).isDirectory()) {
             throw new IllegalArgumentException("Missing path directory (web-content): " + publicPath);
         }
+        List<String> mcpServerUrls = IntStream.range(4, args.length).mapToObj(i -> args[i]).toList();
 
         McpHttpClient mcpClient = new McpHttpClient();
-        ServiceLoader<McpToolClientService> loaderTools = ServiceLoader.load(McpToolClientService.class);
-        for (McpToolClientService action : loaderTools) {
-            McpToolWithUri toolWithUri = action.provide();
-            McpToolInterface tool = toolWithUri.tool();
-            LOG.info(String.format("Register tool: %s at %s", tool.name(), toolWithUri.url()));
-            mcpClient.registerTool(toolWithUri);
+        for (String mcpServerUrl : mcpServerUrls) {
+            URL url;
+            try {
+                url = URI.create(mcpServerUrl).toURL();
+            } catch (MalformedURLException e) {
+                throw new RuntimeException("Invalid mcp-server-URL " + mcpServerUrl, e);
+            }
+            List<McpToolWithUri> tools = mcpClient.listTools(url);
+            for (McpToolWithUri toolWithUri : tools) {
+                McpToolInterface tool = toolWithUri.tool();
+                LOG.info(String.format("Register tool: %s at %s", tool.name(), toolWithUri.url()));
+                mcpClient.registerTool(toolWithUri);
+            }
         }
 
         startServer(host, port, llmUrl, publicPath, mcpClient);
     }
-
-    private static final int kNumArgs = 4;
 
     private static void startServer(String host, int port, String llmUrl, String publicPath, McpHttpClient mcpClient) {
         try {
