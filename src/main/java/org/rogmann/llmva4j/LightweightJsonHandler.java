@@ -15,10 +15,10 @@ import java.util.Map.Entry;
  * A simple JSON-implementation to be used in this application only (to skip dependencies).
  * The recommendation is to use org.json or features like JAX-RS using DTOs in own projects.
  */
-class LightweightJsonHandler {
+public class LightweightJsonHandler {
 
     @SuppressWarnings("unchecked")
-    static void dumpJson(StringBuilder sb, Map<String, Object> map) {
+    public static void dumpJson(StringBuilder sb, Map<String, Object> map) {
         sb.append('{');
         String as = "";
         for (Entry<String, Object> entry : map.entrySet()) {
@@ -73,8 +73,8 @@ class LightweightJsonHandler {
             else if (value instanceof String s) {
                 dumpString(sb, s);
             }
-            else if (value instanceof List) {
-                sb.append(value);
+            else if (value instanceof List listValue) {
+                dumpJson(sb, listValue);
             }
             else if (value instanceof Map) {
                 dumpJson(sb, (Map<String, Object>) value);
@@ -318,7 +318,7 @@ class LightweightJsonHandler {
      * @return value or <code>null</code>
      */
     @SuppressWarnings("unchecked")
-    static <V> V getJsonValue(Map<String, Object> map, String key, Class<V> clazz) {
+    public static <V> V getJsonValue(Map<String, Object> map, String key, Class<V> clazz) {
         Object o = map.get(key);
         if (o == null) {
             return null;
@@ -326,7 +326,7 @@ class LightweightJsonHandler {
         if (clazz.isInstance(o)) {
             return (V) o;
         }
-        throw new IllegalArgumentException(String.format("Unexpeted value-type (%s) of value (%s) at key (%s)", o.getClass(), o, key));
+        throw new IllegalArgumentException(String.format("Unexpected value-type (%s) instead of (%s) of value (%s) at key (%s)", o.getClass(), clazz, o, key));
     }
 
     /**
