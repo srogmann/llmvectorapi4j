@@ -249,11 +249,13 @@ public class McpHttpServer {
 
         McpHttpServer mcpServer = new McpHttpServer();
 
-        ServiceLoader<McpToolImplementation> loaderTools = ServiceLoader.load(McpToolImplementation.class);
-        for (McpToolImplementation action : loaderTools) {
-        	String name = action.getName();
-        	LOG.info(String.format("Register tool implementation: %s in %s", name, action));
-        	mcpServer.mapTools.put(name, action);
+        ServiceLoader<McpToolImplementations> loaderTools = ServiceLoader.load(McpToolImplementations.class);
+        for (McpToolImplementations listSupplier : loaderTools) {
+            for (McpToolImplementation action : listSupplier.get()) {
+                String name = action.getName();
+                LOG.info(String.format("Register tool implementation: %s in %s", name, action));
+                mcpServer.mapTools.put(name, action);
+            }
         }
 
         mcpServer.startServer(host, port);
