@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import org.rogmann.llmva4j.LightweightJsonHandler;
@@ -78,14 +79,19 @@ public class McpHttpServer {
             JsonRpcRequest jsonRpcRequest = JsonRpc.parseJsonRequest(jsonBody.toString());
             LOG.info(String.format("JSON-Request: %s", jsonRpcRequest));
             
-            JsonRpcResponse response = switch (jsonRpcRequest.method()) {
-                case "initialize" -> initializeConnection(jsonRpcRequest.params(), jsonRpcRequest.id());
-                case "notifications/initialized" -> new JsonRpcResponse(null, null, jsonRpcRequest.id());
-                case "tools/list" -> createToolsList(jsonRpcRequest.params(), jsonRpcRequest.id());
-                case "tools/call" -> callTool(jsonRpcRequest.params(), jsonRpcRequest.id());
-                default -> new JsonRpcResponse(null, new JsonRpcError(32000, "Invalid method", null), jsonRpcRequest.id());
-            };
-
+            JsonRpcResponse response;
+            try {
+                response = switch (jsonRpcRequest.method()) {
+                    case "initialize" -> initializeConnection(jsonRpcRequest.params(), jsonRpcRequest.id());
+                    case "notifications/initialized" -> new JsonRpcResponse(null, null, jsonRpcRequest.id());
+                    case "tools/list" -> createToolsList(jsonRpcRequest.params(), jsonRpcRequest.id());
+                    case "tools/call" -> callTool(jsonRpcRequest.params(), jsonRpcRequest.id());
+                    default -> new JsonRpcResponse(null, new JsonRpcError(32000, "Invalid method", null), jsonRpcRequest.id());
+                };
+            } catch (Throwable e) {
+                LOG.log(Level.SEVERE, "Severe error while executing a MCP command", e);
+                response = new JsonRpcResponse(null, new JsonRpcError(32000, "Severe error", null), jsonRpcRequest.id());
+            }
             // Build request for LLM
             var llmRequest = new HashMap<String, Object>();
             
@@ -162,6 +168,7 @@ public class McpHttpServer {
                 }
                 properties.put(key, mapProp);
             });
+            mapInputSchema.put("properties", properties);
             mapInputSchema.put("required", tool.inputSchema().required());
             mapTool.put("inputSchema", mapInputSchema);
             listTools.add(mapTool);
