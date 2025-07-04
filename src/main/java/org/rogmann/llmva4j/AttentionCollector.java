@@ -32,7 +32,7 @@ public class AttentionCollector {
          * @param attOffset    offset in the attention-tensor
          * @param attLength    size of the current block in the attention-tensor
          * @param value        value-tensor
-         * @param voffsetBase  base offset in value tensor of current head, add position * kvDim
+         * @param voffset      base offset in value tensor of current head, add position * kvDim
          */
         void accept(int idxToken, int layer, int head, FloatTensor att, int attOffset, int attLength,
                 FloatTensor value, int voffset);

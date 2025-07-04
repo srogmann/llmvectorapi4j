@@ -91,7 +91,7 @@ public class McpHttpClient {
 
     /**
      * Registers a tool.
-     * @param tool tool to be used in the client
+     * @param toolWithUrl tool to be used in the client and its URL
      */
     public void registerTool(McpToolWithUri toolWithUrl) {
     	mapTools.put(toolWithUrl.tool().name(), toolWithUrl);
