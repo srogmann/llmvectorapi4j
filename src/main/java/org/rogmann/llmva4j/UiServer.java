@@ -14,6 +14,7 @@ import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -132,112 +133,12 @@ public class UiServer {
             boolean hasToolResponse = false;
             String uiResponse = null;
             do {
-                // Build request for LLM
-                var llmRequest = new HashMap<String, Object>();
                 final List<Map<String, Object>> listOpenAITools = convertMcp2OpenAI(mcpClient.getTools());
-                if (!listOpenAITools.isEmpty()) {
-                    llmRequest.put("tools", listOpenAITools);
-                }
-                LOG.fine(String.format("llm.messages-out: %s", messagesWithTools));
-                llmRequest.put("messages", messagesWithTools);
-                llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
-                llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
-                llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
-                llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
-
-                var sbRequest = new StringBuilder(200);
-                LightweightJsonHandler.dumpJson(sbRequest, llmRequest);
-                var requestOut = sbRequest.toString().replace("\"stream\":true", "\"stream\":false");
-                LOG.fine(String.format("Request out: " + requestOut));
-
-                // Send request to LLM
-                URL url = new URI(llmUrl).toURL();
-                try {
-                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                    connection.setRequestMethod("POST");
-                    connection.setRequestProperty("Content-Type", "application/json");
-                    connection.setRequestProperty("Accept", "application/json");
-                    connection.addRequestProperty("Accept", "text/event-stream");
-                    connection.setDoOutput(true);
-
-                    try (OutputStream os = connection.getOutputStream();
-                            OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
-                        osw.write(requestOut);
-                    }
-
-                    int responseCode = connection.getResponseCode();
-                    if (responseCode != HttpURLConnection.HTTP_OK) {
-                        System.err.format("%s HTTP-error accessing %s: %s - %s%n", LocalDateTime.now(),
-                                url, responseCode, connection.getResponseMessage());
-                        return;
-                    }
-                    LOG.fine("Content-Type: " + connection.getContentType());
-
-                    // Read the response in chunks
-                    hasToolResponse = false;
-                    String sResponse;
-                    try (InputStream inputStream = connection.getInputStream();
-                            InputStreamReader isr = new InputStreamReader(inputStream)) {
-                       final StringBuilder sb = new StringBuilder(500);
-                       char[] cBuf = new char[4096];
-                       while (true) {
-                           int len = isr.read(cBuf);
-                           if (len == -1) {
-                               break;
-                           }
-                           sb.append(cBuf, 0, len);
-                       }
-                       sResponse = sb.toString();
-                   }
-                   LOG.fine("Response: " + sResponse);
-                   if (!listOpenAITools.isEmpty()) {
-                       // Check for a tool-call.
-                       Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(sResponse);
-                       List<Map<String, Object>> listChoices = LightweightJsonHandler.getJsonArrayDicts(mapResponse, "choices");
-                       if (listChoices != null && !listChoices.isEmpty()) {
-                           @SuppressWarnings("unchecked")
-                           Map<String, Object> mapMessage = LightweightJsonHandler.getJsonValue(listChoices.get(0), "message", Map.class);
-                           if (mapMessage != null) {
-                               List<Map<String, Object>> listToolCalls = LightweightJsonHandler.getJsonArrayDicts(mapMessage, "tool_calls");
-                               if (listToolCalls != null && !listToolCalls.isEmpty()) {
-                                   for (Map<String, Object> mapToolCall : listToolCalls) {
-                                       String type = LightweightJsonHandler.getJsonValue(mapToolCall, "type", String.class);
-                                       if (!"function".equals(type)) {
-                                           throw new RuntimeException("Unexpected tool_call: " + mapToolCall);
-                                       }
-                                       @SuppressWarnings("unchecked")
-                                       Map<String, Object> mapFunction = LightweightJsonHandler.getJsonValue(mapToolCall, "function", Map.class);
-                                       String functionName = LightweightJsonHandler.getJsonValue(mapFunction, "name", String.class);
-                                       String arguments = LightweightJsonHandler.getJsonValue(mapFunction, "arguments", String.class);
-                                       String id = LightweightJsonHandler.getJsonValue(mapToolCall, "id", String.class);
-                                       Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
-                                       Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id);
-                                       LOG.info("Tool-Result_: " + toolResult);
-                                       @SuppressWarnings("unchecked")
-                                       List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);
-                                       String text = null;
-                                       if (!aToolContent.isEmpty()) {
-                                           Map<String, Object> mapFirstContent = aToolContent.get(0);
-                                           text = LightweightJsonHandler.getJsonValue(mapFirstContent, "text", String.class);
-                                       }
-                                       hasToolResponse = true;
-                                       messagesWithTools.add(mapMessage);
-                                       Map<String, Object> mapToolResponse = new LinkedHashMap<>();
-                                       mapToolResponse.put("role", "tool");
-                                       mapToolResponse.put("content", text);
-                                       mapToolResponse.put("tool_call_id", id);
-                                       messagesWithTools.add(mapToolResponse);
-                                       LOG.fine(String.format("Next messages: %s", messagesWithTools));
-                                   }
-                               }
-                           }
-                       }
-                   }
-                   uiResponse = sResponse;
-
-                } catch (IOException e) {
-                    System.err.format("%s IO-error", LocalDateTime.now(), e.getMessage());
-                    e.printStackTrace();
+                uiResponse = forwardRequest(requestMap, messagesWithTools, listOpenAITools, llmUrl);
+                hasToolResponse = false;
+                if (!listOpenAITools.isEmpty() && uiResponse != null) {
+                    // Check for a tool-call.
+                    hasToolResponse = checkForToolCall(mcpClient, messagesWithTools, uiResponse);
                 }
             } while (hasToolResponse);
 
@@ -271,6 +172,156 @@ public class UiServer {
             sendError(exchange, 500, "Internal server error: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Forwards a request to a language model (LLM) server at the specified URL, handling tool call information
+     * and preparing the request with the provided configuration parameters. This method constructs the request
+     * payload from the given message history and tools, sends it using HTTP POST, and returns the raw response string.
+     *
+     * @param requestMap           The request configuration map containing parameters such as temperature,
+     *                             max_tokens, top_p, and stream. These values are used to configure the LLM request.
+     * @param messagesWithTools    A list of message dictionaries to include in the LLM request. This typically
+     *                             includes user and assistant messages, as well as any tool call responses.
+     * @param listOpenAITools      A list of tool definitions in the OpenAI format. These are added to the request
+     *                             if the list is not empty.
+     * @param llmUrl               The URL of the LLM server to which the request will be sent.
+     *
+     * @return                     The raw JSON response string from the LLM server. Returns null if the HTTP
+     *                             request fails or an exception is thrown.
+     *
+     * @throws MalformedURLException If the provided llmUrl is invalid and cannot be converted to a valid URL.
+     * @throws URISyntaxException    If the provided llmUrl is invalid and cannot be converted to a valid URI.
+     *
+     * @note                       The request is modified to always set the "stream" parameter to false before
+     *                             being sent, even if it was originally true.
+     */
+    private static String forwardRequest(Map<String, Object> requestMap, ArrayList<Map<String, Object>> messagesWithTools,
+            final List<Map<String, Object>> listOpenAITools, String llmUrl)
+            throws MalformedURLException, URISyntaxException {
+        // Build request for LLM
+        var llmRequest = new HashMap<String, Object>();
+        if (!listOpenAITools.isEmpty()) {
+            llmRequest.put("tools", listOpenAITools);
+        }
+        LOG.fine(String.format("llm.messages-out: %s", messagesWithTools));
+        llmRequest.put("messages", messagesWithTools);
+        llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
+        llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
+        llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
+        llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
+
+        var sbRequest = new StringBuilder(200);
+        LightweightJsonHandler.dumpJson(sbRequest, llmRequest);
+        var requestOut = sbRequest.toString().replace("\"stream\":true", "\"stream\":false");
+        LOG.fine(String.format("Request out: " + requestOut));
+
+        // Send request to LLM
+        URL url = new URI(llmUrl).toURL();
+        String uiResponse;
+        try {
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Accept", "application/json");
+            connection.addRequestProperty("Accept", "text/event-stream");
+            connection.setDoOutput(true);
+
+            try (OutputStream os = connection.getOutputStream();
+                    OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
+                osw.write(requestOut);
+            }
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                System.err.format("%s HTTP-error accessing %s: %s - %s%n", LocalDateTime.now(),
+                        url, responseCode, connection.getResponseMessage());
+                return null;
+            }
+            LOG.fine("Content-Type: " + connection.getContentType());
+
+            // Read the response in chunks.s
+            String sResponse;
+            try (InputStream inputStream = connection.getInputStream();
+                    InputStreamReader isr = new InputStreamReader(inputStream)) {
+                final StringBuilder sb = new StringBuilder(500);
+                char[] cBuf = new char[4096];
+                while (true) {
+                    int len = isr.read(cBuf);
+                    if (len == -1) {
+                        break;
+                    }
+                    sb.append(cBuf, 0, len);
+                }
+                sResponse = sb.toString();
+            }
+            LOG.fine("Response: " + sResponse);
+            uiResponse = sResponse;
+        } catch (IOException e) {
+            System.err.format("%s IO-error", LocalDateTime.now(), e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+        return uiResponse;
+    }
+
+    /**
+     * Processes the JSON response to detect and handle tool calls within the message content.
+     * If tool calls are found, executes the corresponding tools using the provided client
+     * and appends both the original message and the tool responses to the messages list.
+     *
+     * @param mcpClient      The HTTP client used to execute tool calls.
+     * @param messagesWithTools  A list of messages to which the tool call message and its response will be appended.
+     * @param sResponse      The raw JSON response string to parse for tool calls.
+     * @return               True if any tool calls were processed and added to the messages list, false otherwise.
+     * @throws IOException   If an error occurs during the tool execution via the McpHttpClient.
+     * @note                 This method assumes the response follows a specific JSON structure containing
+     *                       "choices" array with message objects that might include "tool_calls".
+     */
+    private static boolean checkForToolCall(McpHttpClient mcpClient, ArrayList<Map<String, Object>> messagesWithTools,
+            String sResponse) throws IOException {
+        boolean hasToolResponse = false;
+        Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(sResponse);
+        List<Map<String, Object>> listChoices = LightweightJsonHandler.getJsonArrayDicts(mapResponse, "choices");
+        if (listChoices != null && !listChoices.isEmpty()) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> mapMessage = LightweightJsonHandler.getJsonValue(listChoices.get(0), "message", Map.class);
+            if (mapMessage != null) {
+                List<Map<String, Object>> listToolCalls = LightweightJsonHandler.getJsonArrayDicts(mapMessage, "tool_calls");
+                if (listToolCalls != null && !listToolCalls.isEmpty()) {
+                    for (Map<String, Object> mapToolCall : listToolCalls) {
+                        String type = LightweightJsonHandler.getJsonValue(mapToolCall, "type", String.class);
+                        if (!"function".equals(type)) {
+                            throw new RuntimeException("Unexpected tool_call: " + mapToolCall);
+                        }
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> mapFunction = LightweightJsonHandler.getJsonValue(mapToolCall, "function", Map.class);
+                        String functionName = LightweightJsonHandler.getJsonValue(mapFunction, "name", String.class);
+                        String arguments = LightweightJsonHandler.getJsonValue(mapFunction, "arguments", String.class);
+                        String id = LightweightJsonHandler.getJsonValue(mapToolCall, "id", String.class);
+                        Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
+                        Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id);
+                        LOG.info("Tool-Result_: " + toolResult);
+                        @SuppressWarnings("unchecked")
+                        List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);
+                        String text = null;
+                        if (!aToolContent.isEmpty()) {
+                            Map<String, Object> mapFirstContent = aToolContent.get(0);
+                            text = LightweightJsonHandler.getJsonValue(mapFirstContent, "text", String.class);
+                        }
+                        hasToolResponse = true;
+                        messagesWithTools.add(mapMessage);
+                        Map<String, Object> mapToolResponse = new LinkedHashMap<>();
+                        mapToolResponse.put("role", "tool");
+                        mapToolResponse.put("content", text);
+                        mapToolResponse.put("tool_call_id", id);
+                        messagesWithTools.add(mapToolResponse);
+                        LOG.fine(String.format("Next messages: %s", messagesWithTools));
+                    }
+                }
+            }
+        }
+        return hasToolResponse;
     }
 
     /**
