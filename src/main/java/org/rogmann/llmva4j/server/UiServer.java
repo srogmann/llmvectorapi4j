@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.ServiceLoader;
 import java.util.logging.Logger;
 import java.util.stream.IntStream;
 import java.util.zip.GZIPInputStream;
@@ -40,6 +41,8 @@ import com.sun.net.httpserver.HttpServer;
 
 /**
  * Simple web-server for providing a web interface for an OpenAI-chat/completions-compatible LLM-API endpoint.
+ *
+ * <p>A different LLM-API can be used by providing an implementation of {@link RequestForwarder}./p>
  */
 public class UiServer {
     /** logger */
@@ -84,10 +87,14 @@ public class UiServer {
     }
 
     private static void startServer(String host, int port, String llmUrl, String publicPath, McpHttpClient mcpClient) {
+        ServiceLoader<RequestForwarder> slRequestForwarder = ServiceLoader.load(RequestForwarder.class);
+        RequestForwarder requestForwarder = slRequestForwarder.findFirst()
+                .orElse((requestMap, messagesWithTools, listOpenAITools, url) -> forwardRequest(requestMap, messagesWithTools, listOpenAITools, url));
+
         try {
             var addr = new InetSocketAddress(host, port);
             var server = HttpServer.create(addr, 0);
-            server.createContext("/", exchange -> handleRequest(exchange, llmUrl, publicPath, mcpClient));
+            server.createContext("/", exchange -> handleRequest(exchange, llmUrl, publicPath, mcpClient, requestForwarder));
             server.setExecutor(null); // use default executor
             server.start();
             LOG.info("Server started on " + host + ":" + port);
@@ -96,7 +103,8 @@ public class UiServer {
         }
     }
 
-    private static void handleRequest(HttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient) {
+    private static void handleRequest(HttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient,
+            RequestForwarder requestForwarder) {
         System.out.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI());
         if ("GET".equals(exchange.getRequestMethod())) {
             processGetRequest(exchange, publicPath);
@@ -135,7 +143,7 @@ public class UiServer {
             String uiResponse = null;
             do {
                 final List<Map<String, Object>> listOpenAITools = convertMcp2OpenAI(mcpClient.getTools());
-                uiResponse = forwardRequest(requestMap, messagesWithTools, listOpenAITools, llmUrl);
+                uiResponse = requestForwarder.forwardRequest(requestMap, messagesWithTools, listOpenAITools, llmUrl);
                 hasToolResponse = false;
                 if (!listOpenAITools.isEmpty() && uiResponse != null) {
                     // Check for a tool-call.
