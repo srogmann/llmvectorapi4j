@@ -354,7 +354,7 @@ public class LightweightJsonHandler {
      * @return JSON-array or <code>null</code>
      */
     @SuppressWarnings("unchecked")
-    static List<Map<String, Object>> getJsonArrayDicts(Map<String, Object> map, String key) {
+    public static List<Map<String, Object>> getJsonArrayDicts(Map<String, Object> map, String key) {
         List<Object> listObj = getJsonArray(map, key);
         if (listObj == null) {
             return null;
@@ -452,7 +452,7 @@ public class LightweightJsonHandler {
         }
     }
 
-    static float readFloat(Map<String, Object> map, String key, float defaultValue) {
+    public static float readFloat(Map<String, Object> map, String key, float defaultValue) {
         Object oValue = map.get(key);
         if (oValue == null) {
             return defaultValue;
@@ -466,7 +466,7 @@ public class LightweightJsonHandler {
         throw new IllegalStateException(String.format("Unexpected type (%s / %s) at key (%s), expected float", oValue.getClass(), oValue, key));
     }
 
-    static int readInt(Map<String, Object> map, String key, int defaultValue) {
+    public static int readInt(Map<String, Object> map, String key, int defaultValue) {
         Object oValue = map.get(key);
         if (oValue == null) {
             return defaultValue;
@@ -494,7 +494,7 @@ public class LightweightJsonHandler {
         throw new IllegalStateException(String.format("Unexpected type (%s / %s) at key (%s), expected long", oValue.getClass(), oValue, key));
     }
 
-    static boolean readBoolean(Map<String, Object> map, String key, boolean defaultValue) {
+    public static boolean readBoolean(Map<String, Object> map, String key, boolean defaultValue) {
         Object oValue = map.get(key);
         if (oValue == null) {
             return defaultValue;

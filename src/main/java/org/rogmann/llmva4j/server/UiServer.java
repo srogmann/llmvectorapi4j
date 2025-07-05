@@ -1,4 +1,4 @@
-package org.rogmann.llmva4j;
+package org.rogmann.llmva4j.server;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -29,6 +29,7 @@ import java.util.logging.Logger;
 import java.util.stream.IntStream;
 import java.util.zip.GZIPInputStream;
 
+import org.rogmann.llmva4j.LightweightJsonHandler;
 import org.rogmann.llmva4j.mcp.McpHttpClient;
 import org.rogmann.llmva4j.mcp.McpHttpClient.McpToolWithUri;
 import org.rogmann.llmva4j.mcp.McpToolInterface;
