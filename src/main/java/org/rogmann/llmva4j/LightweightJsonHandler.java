@@ -62,7 +62,7 @@ public class LightweightJsonHandler {
     }
 
     @SuppressWarnings("unchecked")
-    private static void dumpJson(StringBuilder sb, List<Object> list) {
+    public static void dumpJson(StringBuilder sb, List<Object> list) {
         sb.append('[');
         String as = "";
         for (Object value : list) {

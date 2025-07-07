@@ -90,6 +90,7 @@ public class UiServer {
         ServiceLoader<RequestForwarder> slRequestForwarder = ServiceLoader.load(RequestForwarder.class);
         RequestForwarder requestForwarder = slRequestForwarder.findFirst()
                 .orElse((requestMap, messagesWithTools, listOpenAITools, url) -> forwardRequest(requestMap, messagesWithTools, listOpenAITools, url));
+        LOG.info("RequestForwarder: " + requestForwarder);
 
         try {
             var addr = new InetSocketAddress(host, port);
@@ -205,7 +206,7 @@ public class UiServer {
      * @note                       The request is modified to always set the "stream" parameter to false before
      *                             being sent, even if it was originally true.
      */
-    private static String forwardRequest(Map<String, Object> requestMap, ArrayList<Map<String, Object>> messagesWithTools,
+    private static String forwardRequest(Map<String, Object> requestMap, List<Map<String, Object>> messagesWithTools,
             final List<Map<String, Object>> listOpenAITools, String llmUrl)
             throws MalformedURLException, URISyntaxException {
         // Build request for LLM
@@ -249,21 +250,8 @@ public class UiServer {
             }
             LOG.fine("Content-Type: " + connection.getContentType());
 
-            // Read the response in chunks.s
-            String sResponse;
-            try (InputStream inputStream = connection.getInputStream();
-                    InputStreamReader isr = new InputStreamReader(inputStream)) {
-                final StringBuilder sb = new StringBuilder(500);
-                char[] cBuf = new char[4096];
-                while (true) {
-                    int len = isr.read(cBuf);
-                    if (len == -1) {
-                        break;
-                    }
-                    sb.append(cBuf, 0, len);
-                }
-                sResponse = sb.toString();
-            }
+            // Read the response in chunks.
+            String sResponse = readResponse(connection);
             LOG.fine("Response: " + sResponse);
             uiResponse = sResponse;
         } catch (IOException e) {
@@ -272,6 +260,30 @@ public class UiServer {
             return null;
         }
         return uiResponse;
+    }
+
+    /**
+     * Reads the content (body, UTF-8) of the HTTP-response.
+     * @param connection connection
+     * @return content
+     * @throws IOException
+     */
+    public static String readResponse(HttpURLConnection connection) throws IOException {
+        String sResponse;
+        try (InputStream inputStream = connection.getInputStream();
+                InputStreamReader isr = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
+            final StringBuilder sb = new StringBuilder(500);
+            char[] cBuf = new char[4096];
+            while (true) {
+                int len = isr.read(cBuf);
+                if (len == -1) {
+                    break;
+                }
+                sb.append(cBuf, 0, len);
+            }
+            sResponse = sb.toString();
+        }
+        return sResponse;
     }
 
     /**

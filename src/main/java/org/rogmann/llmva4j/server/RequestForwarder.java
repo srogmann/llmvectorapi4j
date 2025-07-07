@@ -2,7 +2,6 @@ package org.rogmann.llmva4j.server;
 
 import java.net.MalformedURLException;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -30,7 +29,7 @@ public interface RequestForwarder {
      * @throws MalformedURLException If the provided llmUrl is invalid and cannot be converted to a valid URL.
      * @throws URISyntaxException    If the provided llmUrl is invalid and cannot be converted to a valid URI.
      */
-    String forwardRequest(Map<String, Object> requestMap, ArrayList<Map<String, Object>> messagesWithTools,
+    String forwardRequest(Map<String, Object> requestMap, List<Map<String, Object>> messagesWithTools,
             final List<Map<String, Object>> listOpenAITools, String llmUrl)
             throws MalformedURLException, URISyntaxException;
 }
