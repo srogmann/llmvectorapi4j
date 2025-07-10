@@ -16,6 +16,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -100,6 +102,7 @@ public class RequestForwarderTriton implements RequestForwarder {
         llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 0.95f));
         llmRequest.put("stream", true);
         llmRequest.put("text_input", textInput);
+        llmRequest.put("max_tokens", Integer.parseInt(System.getProperty("forwarder.triton.maxTokens", "200")));
 
         var sbRequest = new StringBuilder(200);
         LightweightJsonHandler.dumpJson(sbRequest, llmRequest);
@@ -126,10 +129,39 @@ public class RequestForwarderTriton implements RequestForwarder {
                         url, responseCode, connection.getResponseMessage());
                 return null;
             }
-            LOG.fine("Content-Type: " + connection.getContentType());
+            String contentType = connection.getContentType();
+            LOG.fine("Content-Type: " + contentType);
+            LOG.fine(String.format("Status: %d - %s", connection.getResponseCode(), connection.getResponseMessage()));
+            boolean isEventStream = "text/event-strea".equals(contentType);
 
             // Read the response.
-            String sResponse = UiServer.readResponse(connection);
+            String sResponse;
+            if (isEventStream) {
+                StringBuilder sbResponseContent = new StringBuilder(500);
+                Consumer<String> dataConsumer = (data -> {
+                    try {
+                        Map<String, Object> mapChunk = LightweightJsonHandler.parseJsonDict(data);
+                        String textOutput = LightweightJsonHandler.getJsonValue(mapChunk, "text_output", String.class);
+                        if (LOG.isLoggable(Level.FINE)) {
+                            System.out.print(textOutput);
+                        }
+                        sbResponseContent.append(textOutput);
+                    } catch (IOException e) {
+                        throw new RuntimeException("Unexpected exception while parsing chunk: " + data, e);
+                    }
+                });
+                LOG.fine("Response (merged):");
+                if (LOG.isLoggable(Level.FINE)) {
+                    System.out.print("<RESPONSE>");
+                }
+                UiServer.readEventStream(connection, dataConsumer);
+                if (LOG.isLoggable(Level.FINE)) {
+                    System.out.println("</RESPONSE>");
+                }
+                sResponse = sbResponseContent.toString();
+            } else {
+                sResponse = UiServer.readResponse(connection);
+            }
             LOG.fine("Response: " + sResponse);
             Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(sResponse);
             var modelName = LightweightJsonHandler.getJsonValue(mapResponse, "model_name", String.class);
@@ -164,6 +196,7 @@ public class RequestForwarderTriton implements RequestForwarder {
             }
             respMsg.put("content", textOutput);
             choice0.put("message", respMsg);
+            listChoices.add(choice0);
             responseMapped.put("choices", listChoices);
             
             sb.setLength(0);
