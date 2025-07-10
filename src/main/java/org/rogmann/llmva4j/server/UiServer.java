@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.ServiceLoader;
+import java.util.function.Consumer;
 import java.util.logging.Logger;
 import java.util.stream.IntStream;
 import java.util.zip.GZIPInputStream;
@@ -284,6 +285,51 @@ public class UiServer {
             sResponse = sb.toString();
         }
         return sResponse;
+    }
+
+    /**
+     * Reads a SSE-body (event stream).
+     * @param connection connection
+     * @param dataConsumer consumer to read data-chunks 
+     * @throws IOException
+     */
+    public static void readEventStream(HttpURLConnection connection, Consumer<String> dataConsumer) throws IOException {
+        try (InputStream inputStream = connection.getInputStream();
+                InputStreamReader isr = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
+            StringBuilder sb = new StringBuilder(1000);
+            char[] cBuf = new char[4096];
+            while (true) {
+                int len = isr.read(cBuf);
+                if (len == -1) {
+                    break;
+                }
+                int curOffset = sb.length();
+                sb.append(cBuf, 0, len);
+                while (true) {
+                    int idxCR = sb.indexOf("\r", curOffset);
+                    if (idxCR < curOffset) {
+                        break;
+                    }
+                    // Remove carriage-return.
+                    sb.replace(idxCR, idxCR + 1, "");
+                }
+                while ("data: ".equals(sb.substring(0, 6))) {
+                    int idxLF = sb.indexOf("\n\n");
+                    if (idxLF < 0) {
+                        break;
+                    }
+                    String data = sb.substring(6, idxLF);
+                    if (data.length() == 0 || "[DONE]".equalsIgnoreCase(data)) {
+                        break;
+                    }
+                    dataConsumer.accept(data);
+                    sb.delete(0, idxLF + 2);
+                }
+            }
+            if (sb.length() > 0) {
+                LOG.warning(String.format("Unexpected end of event-stream: %s", sb));
+            }
+        }
     }
 
     /**
