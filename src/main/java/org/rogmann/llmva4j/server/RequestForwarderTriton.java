@@ -16,6 +16,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -112,6 +113,7 @@ public class RequestForwarderTriton implements RequestForwarder {
         // Send request to LLM
         URL url = new URI(llmUrl).toURL();
         String uiResponse;
+        AtomicReference<String> modelName = new AtomicReference<>();
         try {
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("POST");
@@ -132,20 +134,24 @@ public class RequestForwarderTriton implements RequestForwarder {
             String contentType = connection.getContentType();
             LOG.fine("Content-Type: " + contentType);
             LOG.fine(String.format("Status: %d - %s", connection.getResponseCode(), connection.getResponseMessage()));
-            boolean isEventStream = "text/event-strea".equals(contentType);
+            boolean isEventStream = "text/event-stream".equals(contentType) || "text/event-stream; charset=utf-8".equals(contentType);
 
             // Read the response.
-            String sResponse;
+            String textOutput;
             if (isEventStream) {
                 StringBuilder sbResponseContent = new StringBuilder(500);
                 Consumer<String> dataConsumer = (data -> {
                     try {
                         Map<String, Object> mapChunk = LightweightJsonHandler.parseJsonDict(data);
-                        String textOutput = LightweightJsonHandler.getJsonValue(mapChunk, "text_output", String.class);
-                        if (LOG.isLoggable(Level.FINE)) {
-                            System.out.print(textOutput);
+                        String lModelName = LightweightJsonHandler.getJsonValue(mapChunk, "model_name", String.class);
+                        if (modelName.get() == null && lModelName != null) {
+                            modelName.set(lModelName);
                         }
-                        sbResponseContent.append(textOutput);
+                        String textChunk = LightweightJsonHandler.getJsonValue(mapChunk, "text_output", String.class);
+                        if (LOG.isLoggable(Level.FINE)) {
+                            System.out.print(textChunk);
+                        }
+                        sbResponseContent.append(textChunk);
                     } catch (IOException e) {
                         throw new RuntimeException("Unexpected exception while parsing chunk: " + data, e);
                     }
@@ -158,14 +164,14 @@ public class RequestForwarderTriton implements RequestForwarder {
                 if (LOG.isLoggable(Level.FINE)) {
                     System.out.println("</RESPONSE>");
                 }
-                sResponse = sbResponseContent.toString();
+                textOutput = sbResponseContent.toString();
             } else {
-                sResponse = UiServer.readResponse(connection);
+                var sResponse = UiServer.readResponse(connection);
+                Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(sResponse);
+                modelName.set(LightweightJsonHandler.getJsonValue(mapResponse, "model_name", String.class));
+                textOutput = LightweightJsonHandler.getJsonValue(mapResponse, "text_output", String.class);
             }
-            LOG.fine("Response: " + sResponse);
-            Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(sResponse);
-            var modelName = LightweightJsonHandler.getJsonValue(mapResponse, "model_name", String.class);
-            var textOutput = LightweightJsonHandler.getJsonValue(mapResponse, "text_output", String.class);
+            LOG.fine("Response: " + textOutput);
             
             // Map the response to llama.cpp-format.
             Map<String, Object> responseMapped = new LinkedHashMap<>();
