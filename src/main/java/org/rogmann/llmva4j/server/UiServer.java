@@ -298,6 +298,7 @@ public class UiServer {
                 InputStreamReader isr = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
             StringBuilder sb = new StringBuilder(1000);
             char[] cBuf = new char[4096];
+            int dataCount = 0;
             while (true) {
                 int len = isr.read(cBuf);
                 if (len == -1) {
@@ -313,7 +314,12 @@ public class UiServer {
                     // Remove carriage-return.
                     sb.replace(idxCR, idxCR + 1, "");
                 }
-                while ("data: ".equals(sb.substring(0, 6))) {
+                if (sb.length() == 0) {
+                    LOG.fine(String.format("missing data-line in response (#data-lines=%d)", dataCount));
+                    break;
+                }
+                while (sb.length() >= 6 && "data: ".equals(sb.substring(0, 6))) {
+                    dataCount++;
                     int idxLF = sb.indexOf("\n\n");
                     if (idxLF < 0) {
                         break;
@@ -327,7 +333,7 @@ public class UiServer {
                 }
             }
             if (sb.length() > 0) {
-                LOG.warning(String.format("Unexpected end of event-stream: %s", sb));
+                LOG.warning(String.format("Unexpected end of event-stream (#data-lines=%d): %s", dataCount, sb));
             }
         }
     }
