@@ -1,6 +1,6 @@
 # llmvectorapi4j
 
-Implementation of large language models in Java using the Vector API.
+Implementation of large language models in Java using the Vector API and a prototype of MCP-client and MCP-server.
 
 This implementation is an extension of the implementation [llama3.java](https://github.com/mukel/llama3.java) by Alfonso² Peterssen which is based on Andrej Karpathy's llama2.c and minbpe projects. This extension contains:
 
@@ -16,6 +16,10 @@ Supported models are:
 * Qwen3 (non-MoE)
 
 This project has no dependencies on other libraries. You may have a look at [LangChain for Java](https://github.com/langchain4j/langchain4j).
+
+## MCP
+
+The class UiServer can be used to forward, for example, function calls from a llama.cpp web server to a custom Java implementation of the function. The custom MCP tools are provided via the McpHttpServer class, and the UiServer class utilizes the McpHttpClient class to access these custom tools using the model-context-protocol (without OAuth authentication). These classes are intended for local testing, not for production use. The tools can be provided by implementing the interface org.rogmann.mcp.examples.ToolListSupplier to be used by ServiceLoader.
 
 ## Display of Attentions
 
