@@ -21,6 +21,12 @@ This project has no dependencies on other libraries. You may have a look at [Lan
 
 The class UiServer can be used to forward, for example, function calls from a llama.cpp web server to a custom Java implementation of the function. The custom MCP tools are provided via the McpHttpServer class, and the UiServer class utilizes the McpHttpClient class to access these custom tools using the model-context-protocol (without OAuth authentication). These classes are intended for local testing, not for production use. The tools can be provided by implementing the interface org.rogmann.mcp.examples.ToolListSupplier to be used by ServiceLoader.
 
+### Security Note for MCP
+
+The installation of an MCP tool is straightforward, but it's always important to consider the potential consequences it might have: What would happen if the language model makes an unwanted call (either due to a calculation error, unwanted training data, or an unexpected/unwanted prompt)? See the following quote from [https://modelcontextprotocol.io/docs/concepts/tools](https://modelcontextprotocol.io/docs/concepts/tools) for reference:
+
+> Tools are designed to be model-controlled, meaning that tools are exposed from servers to clients with the intention of the AI model being able to automatically invoke them (with a human in the loop to grant approval).
+
 ## Display of Attentions
 
 If the display of attentions is enabled, the attentions with long value-vectors are displayed. In a translation from english to chinese at the token "三" the model might be interested in the english word "three" (see picture below).
