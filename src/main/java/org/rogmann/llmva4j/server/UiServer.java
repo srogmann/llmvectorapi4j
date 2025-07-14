@@ -49,6 +49,9 @@ public class UiServer {
     /** logger */
     private static final Logger LOG = Logger.getLogger(UiServer.class.getName());
 
+    /** property to set a maximum number of tool-calls (default is 3) in a request */
+    private static final String PROP_MAX_TOOL_CALLS = "uiserver.max.toolCalls";
+
     /**
      * Entry method, starts a web-server.
      * @param args UiServer &lt;server-ip&gt; &lt;server-port&gt; &lt;llm-url&gt; &lt;public-path&gt;
@@ -143,6 +146,7 @@ public class UiServer {
 
             boolean hasToolResponse = false;
             String uiResponse = null;
+            int numToolCalls = 0;
             do {
                 final List<Map<String, Object>> listOpenAITools = convertMcp2OpenAI(mcpClient.getTools());
                 uiResponse = requestForwarder.forwardRequest(requestMap, messagesWithTools, listOpenAITools, llmUrl);
@@ -150,6 +154,13 @@ public class UiServer {
                 if (!listOpenAITools.isEmpty() && uiResponse != null) {
                     // Check for a tool-call.
                     hasToolResponse = checkForToolCall(mcpClient, messagesWithTools, uiResponse);
+                    numToolCalls++;
+                    int maxNumToolCalls = Integer.getInteger(PROP_MAX_TOOL_CALLS, 3);
+                    if (hasToolResponse && numToolCalls > maxNumToolCalls) {
+                        // We don't want an infinite loop.
+                        LOG.severe(String.format("Reached maximum number of tool-calls (%d) in a request", maxNumToolCalls));
+                        break;
+                    };
                 }
             } while (hasToolResponse);
 
