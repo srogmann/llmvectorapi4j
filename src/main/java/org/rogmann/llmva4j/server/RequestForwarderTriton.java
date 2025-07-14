@@ -175,7 +175,7 @@ public class RequestForwarderTriton implements RequestForwarder {
             
             // Map the response to llama.cpp-format.
             Map<String, Object> responseMapped = new LinkedHashMap<>();
-            responseMapped.put("model_name", modelName);
+            responseMapped.put("model_name", modelName.get());
             List<Map<String, Object>> listChoices = new ArrayList<>();
             Map<String, Object> choice0 = new LinkedHashMap<>();
             choice0.put("index", 0);
