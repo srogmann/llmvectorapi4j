@@ -19,7 +19,7 @@ This project has no dependencies on other libraries. You may have a look at [Lan
 
 ## MCP
 
-The class UiServer can be used to forward, for example, function calls from a llama.cpp web server to a custom Java implementation of the function. The custom MCP tools are provided via the McpHttpServer class, and the UiServer class utilizes the McpHttpClient class to access these custom tools using the model-context-protocol (without OAuth authentication). These classes are intended for local testing, not for production use. The tools can be provided by implementing the interface org.rogmann.mcp.examples.ToolListSupplier to be used by ServiceLoader.
+The class UiServer can be used to forward, for example, function calls from a llama.cpp web server to a custom Java implementation of the function. The custom MCP tools are provided via the McpHttpServer class, and the UiServer class utilizes the McpHttpClient class to access these custom tools using the model-context-protocol (without OAuth authentication). These classes are intended for local testing, not for production use. The tools can be provided by implementing the interface org.rogmann.llmva4j.mcp.McpToolImplementations to be used by ServiceLoader.
 
 ### Security Note for MCP
 
