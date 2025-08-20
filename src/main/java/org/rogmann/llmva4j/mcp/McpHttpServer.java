@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -35,17 +36,40 @@ public class McpHttpServer {
     private static final Logger LOG = Logger.getLogger(McpHttpServer.class.getName());
 
     private static final String SERVER_VERSION = "0.1.0";
-    
+
     private ConcurrentMap<String, McpToolImplementation> mapTools = new ConcurrentHashMap<>();
 
-    private void startServer(String host, int port) {
+    /**
+     * MCP-server and its HTTP-server.
+     * @param mcpServer MCP-Server
+     * @param httpServer HTTP-Server
+     */
+    public record StartedMcpHttpServer(McpHttpServer mcpServer, HttpServer httpServer) { }
+
+    /**
+     * Registers a tool.
+     * @param name name of the tool
+     * @param toolImpl implementation of the tool
+     */
+    public void registerTool(String name, McpToolImplementation toolImpl) {
+        mapTools.put(name, toolImpl);
+    }
+
+    /**
+     * Starts a MCP-server.
+     * @param host host of MCP-server
+     * @param port port of MCP-server
+     * @return started MCP-server
+     */
+    public StartedMcpHttpServer startServer(String host, int port) {
         try {
-            var addr = new java.net.InetSocketAddress(host, port);
+            var addr = new InetSocketAddress(host, port);
             var server = HttpServer.create(addr, 0);
             server.createContext("/", exchange -> handleRequest(exchange));
             server.setExecutor(null); // use default executor
             server.start();
-            System.out.println("Server started on " + host + ":" + port);
+            LOG.info("Server started on " + host + ":" + port);
+            return new StartedMcpHttpServer(this, server);
         } catch (IOException e) {
             throw new RuntimeException("IO-error while starting server", e);
         }
