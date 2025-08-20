@@ -17,6 +17,17 @@ import java.util.Map.Entry;
  */
 public class LightweightJsonHandler {
 
+    /**
+     * Dumps a map into JSON-format.
+     * @param map map
+     * @return JSON output
+     */
+    public static String dumpJson(Map<String, Object> map) {
+        StringBuilder sb = new StringBuilder(100);
+        dumpJson(sb, map);
+        return sb.toString();
+    }
+
     @SuppressWarnings("unchecked")
     public static void dumpJson(StringBuilder sb, Map<String, Object> map) {
         sb.append('{');
