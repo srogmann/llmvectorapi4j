@@ -36,9 +36,9 @@ import org.rogmann.llmva4j.mcp.McpHttpClient;
 import org.rogmann.llmva4j.mcp.McpHttpClient.McpToolWithUri;
 import org.rogmann.llmva4j.mcp.McpToolInterface;
 import org.rogmann.llmva4j.mcp.McpToolPropertyDescription;
-
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+import org.rogmann.llmva4j.server.http.HttpHandler;
+import org.rogmann.llmva4j.server.http.HttpServerDispatch;
+import org.rogmann.llmva4j.server.http.HttpServerDispatchExchange;
 
 /**
  * Simple web-server for providing a web interface for an OpenAI-chat/completions-compatible LLM-API endpoint.
@@ -98,8 +98,8 @@ public class UiServer {
 
         try {
             var addr = new InetSocketAddress(host, port);
-            var server = HttpServer.create(addr, 0);
-            server.createContext("/", exchange -> handleRequest(exchange, llmUrl, publicPath, mcpClient, requestForwarder));
+            HttpHandler handler = exchange -> handleRequest(exchange, llmUrl, publicPath, mcpClient, requestForwarder);
+			var server = new HttpServerDispatch(addr, handler);
             server.setExecutor(null); // use default executor
             server.start();
             LOG.info("Server started on " + host + ":" + port);
@@ -108,7 +108,7 @@ public class UiServer {
         }
     }
 
-    private static void handleRequest(HttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient,
+    private static void handleRequest(HttpServerDispatchExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient,
             RequestForwarder requestForwarder) {
         System.out.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI());
         if ("GET".equals(exchange.getRequestMethod())) {
@@ -179,7 +179,7 @@ public class UiServer {
                     }
                 }
                 LOG.fine(String.format("UI-response: %s", uiResponse));
-                exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
+                exchange.getResponseHeaders().put("Content-Type", "text/event-stream");
                 exchange.sendResponseHeaders(200, 0);
                 try (OutputStream os = exchange.getResponseBody();
                         OutputStreamWriter osw = new OutputStreamWriter(os, StandardCharsets.UTF_8)) {
@@ -414,7 +414,7 @@ public class UiServer {
      * @param connection HTTP-connection
      * @throws IOException in case of a network error
      */
-    static void streamResponse(HttpExchange exchange, HttpURLConnection connection) throws IOException {
+    static void streamResponse(HttpServerDispatchExchange exchange, HttpURLConnection connection) throws IOException {
         try (InputStream inputStream = connection.getInputStream();
                  BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
             exchange.sendResponseHeaders(200, 0);
@@ -465,8 +465,9 @@ public class UiServer {
         return listOpenAITools;
     }
 
-    private static void processGetRequest(HttpExchange exchange, String publicPath) {
-        String path = exchange.getRequestURI().getPath();
+    private static void processGetRequest(HttpServerDispatchExchange exchange, String publicPath) {
+        String uri = exchange.getRequestURI();
+        String path = uri.replaceFirst("[?].*", "");
         if (path.equals("/")) {
             path = "/index.html";
         }
@@ -537,7 +538,7 @@ public class UiServer {
             }
 
             // Send the response
-            exchange.getResponseHeaders().set("Content-Type", contentType);
+            exchange.getResponseHeaders().put("Content-Type", contentType);
             exchange.sendResponseHeaders(200, content.length);
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(content);
@@ -548,7 +549,7 @@ public class UiServer {
         }
     }
 
-    private static void sendError(HttpExchange exchange, int code, String message) {
+    private static void sendError(HttpServerDispatchExchange exchange, int code, String message) {
         try {
             var errorResponse = String.format("{\"error\": \"%s\"}", message);
             exchange.sendResponseHeaders(code, errorResponse.length());
