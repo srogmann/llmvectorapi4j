@@ -99,7 +99,8 @@ public class UiServer {
         try {
             var addr = new InetSocketAddress(host, port);
             var server = HttpServer.create(addr, 0);
-            server.createContext("/", exchange -> handleRequest(exchange, llmUrl, publicPath, mcpClient, requestForwarder));
+            server.createContext("/", exchange -> handleRequest(new HttpExchangeDecorator(exchange),
+                    llmUrl, publicPath, mcpClient, requestForwarder));
             server.setExecutor(null); // use default executor
             server.start();
             LOG.info("Server started on " + host + ":" + port);
@@ -108,7 +109,7 @@ public class UiServer {
         }
     }
 
-    private static void handleRequest(HttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient,
+    public static void handleRequest(IHttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient,
             RequestForwarder requestForwarder) {
         System.out.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI());
         if ("GET".equals(exchange.getRequestMethod())) {
@@ -218,7 +219,7 @@ public class UiServer {
      * @note                       The request is modified to always set the "stream" parameter to false before
      *                             being sent, even if it was originally true.
      */
-    private static String forwardRequest(Map<String, Object> requestMap, List<Map<String, Object>> messagesWithTools,
+    public static String forwardRequest(Map<String, Object> requestMap, List<Map<String, Object>> messagesWithTools,
             final List<Map<String, Object>> listOpenAITools, String llmUrl)
             throws MalformedURLException, URISyntaxException {
         // Build request for LLM
@@ -466,7 +467,7 @@ public class UiServer {
         return listOpenAITools;
     }
 
-    private static void processGetRequest(HttpExchange exchange, String publicPath) {
+    private static void processGetRequest(IHttpExchange exchange, String publicPath) {
         String path = exchange.getRequestURI().getPath();
         if (path.equals("/")) {
             path = "/index.html";
@@ -549,7 +550,7 @@ public class UiServer {
         }
     }
 
-    private static void sendError(HttpExchange exchange, int code, String message) {
+    private static void sendError(IHttpExchange exchange, int code, String message) {
         try {
             var errorResponse = String.format("{\"error\": \"%s\"}", message);
             exchange.sendResponseHeaders(code, errorResponse.length());
