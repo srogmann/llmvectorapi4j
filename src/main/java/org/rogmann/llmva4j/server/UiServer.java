@@ -79,7 +79,7 @@ public class UiServer {
             } catch (MalformedURLException e) {
                 throw new RuntimeException("Invalid mcp-server-URL " + mcpServerUrl, e);
             }
-            List<McpToolWithUri> tools = mcpClient.listTools(url);
+            List<McpToolWithUri> tools = mcpClient.listTools(url, null);
             for (McpToolWithUri toolWithUri : tools) {
                 McpToolInterface tool = toolWithUri.tool();
                 LOG.info(String.format("Register tool: %s at %s", tool.name(), toolWithUri.url()));
@@ -111,7 +111,7 @@ public class UiServer {
 
     public static void handleRequest(IHttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient,
             RequestForwarder requestForwarder) {
-        System.out.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI());
+        LOG.info(String.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI()));
         if ("GET".equals(exchange.getRequestMethod())) {
             processGetRequest(exchange, publicPath);
             return;
@@ -121,6 +121,8 @@ public class UiServer {
             sendError(exchange, 405, "Method not allowed");
             return;
         }
+        
+        String cookie = exchange.getRequestHeaders().getFirst("Cookie");
 
         try {
             String httpRequestBody;
@@ -154,7 +156,7 @@ public class UiServer {
                 hasToolResponse = false;
                 if (!listOpenAITools.isEmpty() && uiResponse != null) {
                     // Check for a tool-call.
-                    hasToolResponse = checkForToolCall(mcpClient, messagesWithTools, uiResponse);
+                    hasToolResponse = checkForToolCall(mcpClient, messagesWithTools, uiResponse, cookie);
                     numToolCalls++;
                     int maxNumToolCalls = Integer.getInteger(PROP_MAX_TOOL_CALLS, 3);
                     if (hasToolResponse && numToolCalls > maxNumToolCalls) {
@@ -359,13 +361,14 @@ public class UiServer {
      * @param mcpClient      The HTTP client used to execute tool calls.
      * @param messagesWithTools  A list of messages to which the tool call message and its response will be appended.
      * @param sResponse      The raw JSON response string to parse for tool calls.
+     * @param cookie         optional HTTP cookie
      * @return               True if any tool calls were processed and added to the messages list, false otherwise.
      * @throws IOException   If an error occurs during the tool execution via the McpHttpClient.
      * @note                 This method assumes the response follows a specific JSON structure containing
      *                       "choices" array with message objects that might include "tool_calls".
      */
     private static boolean checkForToolCall(McpHttpClient mcpClient, ArrayList<Map<String, Object>> messagesWithTools,
-            String sResponse) throws IOException {
+            String sResponse, String cookie) throws IOException {
         boolean hasToolResponse = false;
         Map<String, Object> mapResponse = LightweightJsonHandler.parseJsonDict(sResponse);
         List<Map<String, Object>> listChoices = LightweightJsonHandler.getJsonArrayDicts(mapResponse, "choices");
@@ -386,7 +389,7 @@ public class UiServer {
                         String arguments = LightweightJsonHandler.getJsonValue(mapFunction, "arguments", String.class);
                         String id = LightweightJsonHandler.getJsonValue(mapToolCall, "id", String.class);
                         Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
-                        Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id);
+                        Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id, cookie);
                         LOG.info("Tool-Result: " + toolResult);
                         @SuppressWarnings("unchecked")
                         List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);

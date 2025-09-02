@@ -24,8 +24,9 @@ import org.rogmann.llmva4j.LightweightJsonHandler;
 import org.rogmann.llmva4j.mcp.JsonRpc.JsonRpcError;
 import org.rogmann.llmva4j.mcp.JsonRpc.JsonRpcRequest;
 import org.rogmann.llmva4j.mcp.JsonRpc.JsonRpcResponse;
+import org.rogmann.llmva4j.server.HttpExchangeDecorator;
+import org.rogmann.llmva4j.server.IHttpExchange;
 
-import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 /**
@@ -65,7 +66,7 @@ public class McpHttpServer {
         try {
             var addr = new InetSocketAddress(host, port);
             var server = HttpServer.create(addr, 0);
-            server.createContext("/", exchange -> handleRequest(exchange));
+            server.createContext("/", exchange -> handleRequest(new HttpExchangeDecorator(exchange), mapTools));
             server.setExecutor(null); // use default executor
             server.start();
             LOG.info("Server started on " + host + ":" + port);
@@ -75,7 +76,7 @@ public class McpHttpServer {
         }
     }
 
-    private void handleRequest(HttpExchange exchange) {
+    public static void handleRequest(IHttpExchange exchange, ConcurrentMap<String, McpToolImplementation> mapTools) {
         LOG.info(String.format("%s %s request %s", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI()));
         if ("GET".equals(exchange.getRequestMethod())) {
             processGetRequest(exchange);
@@ -108,8 +109,8 @@ public class McpHttpServer {
                 response = switch (jsonRpcRequest.method()) {
                     case "initialize" -> initializeConnection(jsonRpcRequest.params(), jsonRpcRequest.id());
                     case "notifications/initialized" -> new JsonRpcResponse(null, null, jsonRpcRequest.id());
-                    case "tools/list" -> createToolsList(jsonRpcRequest.params(), jsonRpcRequest.id());
-                    case "tools/call" -> callTool(jsonRpcRequest.params(), jsonRpcRequest.id());
+                    case "tools/list" -> createToolsList(mapTools, jsonRpcRequest.params(), jsonRpcRequest.id());
+                    case "tools/call" -> callTool(mapTools, jsonRpcRequest.params(), jsonRpcRequest.id());
                     default -> new JsonRpcResponse(null, new JsonRpcError(32000, "Invalid method", null), jsonRpcRequest.id());
                 };
             } catch (Throwable e) {
@@ -144,7 +145,7 @@ public class McpHttpServer {
         }
     }
 
-    private JsonRpcResponse initializeConnection(Map<String, Object> params, Object id) {
+    private static JsonRpcResponse initializeConnection(Map<String, Object> params, Object id) {
         LOG.fine(String.format("params: %s, id: %s", params, id));
         @SuppressWarnings("unchecked")
         Map<String, Object> clientInfo = (Map<String, Object>) params.get("clientInfo");
@@ -168,7 +169,8 @@ public class McpHttpServer {
         return new JsonRpcResponse(result, null, id);
     }
 
-    private JsonRpcResponse createToolsList(Map<String, Object> params, Object id) {
+    private static JsonRpcResponse createToolsList(ConcurrentMap<String, McpToolImplementation> mapTools,
+            Map<String, Object> params, Object id) {
         LOG.fine(String.format("listTools: params: %s, id: %s", params, id));
         
         Map<String, Object> result = new LinkedHashMap<String, Object>();
@@ -201,7 +203,8 @@ public class McpHttpServer {
         return new JsonRpcResponse(result, null, id);
     }
 
-    private JsonRpcResponse callTool(Map<String, Object> params, Object id) {
+    private static JsonRpcResponse callTool(ConcurrentMap<String, McpToolImplementation> mapTools,
+            Map<String, Object> params, Object id) {
         // https://modelcontextprotocol.io/specification/2025-06-18/server/tools
         LOG.fine(String.format("callTool: params: %s, id: %s", params, id));
 
@@ -222,7 +225,7 @@ public class McpHttpServer {
         return new JsonRpcResponse(result, null, id);
     }
 
-    private static void processGetRequest(HttpExchange exchange) {
+    private static void processGetRequest(IHttpExchange exchange) {
         String path = exchange.getRequestURI().getPath();
         LOG.severe(String.format("GET-request: %s", path));
 
@@ -238,7 +241,7 @@ public class McpHttpServer {
         }
     }
 
-    private static void sendError(HttpExchange exchange, int code, int rpcCode, String message, Object id) {
+    private static void sendError(IHttpExchange exchange, int code, int rpcCode, String message, Object id) {
         LOG.severe(String.format("Error: %d - %s", rpcCode, message));
         try {
             Map<String, Object> mapResponse = new LinkedHashMap<>(3);
@@ -249,7 +252,7 @@ public class McpHttpServer {
             mapResponse.put("error", mapError);
             mapResponse.put("id", id);
             var errorResponse = serializeToJson(mapResponse);
-            exchange.setAttribute("Content-Type", "application/json");
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(code, errorResponse.length());
             var os = exchange.getResponseBody();
             os.write(errorResponse.getBytes());

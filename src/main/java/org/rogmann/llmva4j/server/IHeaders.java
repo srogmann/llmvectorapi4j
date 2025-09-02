@@ -6,6 +6,13 @@ package org.rogmann.llmva4j.server;
 public interface IHeaders {
 
     /**
+     * Gets the first value of a HTTP header.
+     * @param key key
+     * @return value or <code>null</code>
+     */
+    String getFirst(String key);
+
+    /**
      * Adds the given {@code value} to the list of headers for the given
      * {@code key}. If the mapping does not already exist, then it is created.
      *

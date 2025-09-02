@@ -17,6 +17,11 @@ public class HeadersDecorator implements IHeaders {
         this.headers = headers;
     }
 
+    @Override
+    public String getFirst(String key) {
+        return headers.getFirst(key);
+    }
+
     /** {@inheritDoc} */
     @Override
     public void add(String key, String value) {
@@ -28,4 +33,5 @@ public class HeadersDecorator implements IHeaders {
     public void set(String key, String value) {
         headers.set(key, value);
     }
+
 }
