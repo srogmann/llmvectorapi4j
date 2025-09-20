@@ -239,7 +239,7 @@ public class UiServer {
         var sbRequest = new StringBuilder(200);
         LightweightJsonHandler.dumpJson(sbRequest, llmRequest);
         var requestOut = sbRequest.toString().replace("\"stream\":true", "\"stream\":false");
-        LOG.fine(String.format("Request out: " + requestOut));
+        LOG.fine("Request out: " + requestOut);
 
         // Send request to LLM
         URL url = new URI(llmUrl).toURL();
