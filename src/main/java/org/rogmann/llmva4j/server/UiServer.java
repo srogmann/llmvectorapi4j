@@ -28,6 +28,7 @@ import java.util.Map.Entry;
 import java.util.ServiceLoader;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import java.util.zip.GZIPInputStream;
 
@@ -51,6 +52,9 @@ public class UiServer {
 
     /** property to set a maximum number of tool-calls (default is 3) in a request */
     private static final String PROP_MAX_TOOL_CALLS = "uiserver.max.toolCalls";
+
+    /** pattern used to recognize a JSON response (i.e. probably tool call) */
+    private static final Pattern REG_EXP_JSON = Pattern.compile("[{]\".*[}]");
 
     /**
      * Entry method, starts a web-server.
@@ -258,9 +262,20 @@ public class UiServer {
             }
 
             int responseCode = connection.getResponseCode();
-            if (responseCode != HttpURLConnection.HTTP_OK) {
+            if (responseCode >= HttpURLConnection.HTTP_INTERNAL_ERROR) {
                 System.err.format("%s HTTP-error accessing %s: %s - %s%n", LocalDateTime.now(),
                         url, responseCode, connection.getResponseMessage());
+                try (InputStream errorStream = connection.getErrorStream()) {
+                    String sResponse = readResponse(errorStream);
+                    LOG.info("Error-Response: " + sResponse);
+                }
+                return null;
+            }
+            else if (responseCode != HttpURLConnection.HTTP_OK) {
+                System.err.format("%s HTTP-error accessing %s: %s - %s%n", LocalDateTime.now(),
+                        url, responseCode, connection.getResponseMessage());
+                String sResponse = readResponse(connection);
+                LOG.info("Server-Response: " + sResponse);
                 return null;
             }
             LOG.fine("Content-Type: " + connection.getContentType());
@@ -285,9 +300,20 @@ public class UiServer {
      * @throws IOException
      */
     public static String readResponse(HttpURLConnection connection) throws IOException {
+        try (InputStream is = connection.getInputStream()) {
+            return readResponse(is);
+        }
+    }
+
+    /**
+     * Reads the content (body, UTF-8) of input-stream/error-stream of a HTTP-response.
+     * @param inputStream input-stream
+     * @return content
+     * @throws IOException
+     */
+    static String readResponse(InputStream inputStream) throws IOException {
         String sResponse;
-        try (InputStream inputStream = connection.getInputStream();
-                InputStreamReader isr = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
+        try (InputStreamReader isr = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
             final StringBuilder sb = new StringBuilder(500);
             char[] cBuf = new char[4096];
             while (true) {
@@ -377,6 +403,7 @@ public class UiServer {
             Map<String, Object> mapMessage = LightweightJsonHandler.getJsonValue(listChoices.get(0), "message", Map.class);
             if (mapMessage != null) {
                 List<Map<String, Object>> listToolCalls = LightweightJsonHandler.getJsonArrayDicts(mapMessage, "tool_calls");
+                String msgContent = LightweightJsonHandler.getJsonValue(mapMessage, "content", String.class);
                 if (listToolCalls != null && !listToolCalls.isEmpty()) {
                     for (Map<String, Object> mapToolCall : listToolCalls) {
                         String type = LightweightJsonHandler.getJsonValue(mapToolCall, "type", String.class);
@@ -407,6 +434,32 @@ public class UiServer {
                         messagesWithTools.add(mapToolResponse);
                         LOG.fine(String.format("Next messages: %s", messagesWithTools));
                     }
+                } else if (msgContent != null && REG_EXP_JSON.matcher(msgContent).matches() && mcpClient.getTools().size() == 1) {
+                    // gpt-oss-20b may return tool-arguments in content with empty tool-calls attribute in vllm.
+                    LOG.info("Tool-arguments in content: " + msgContent);
+                    McpToolInterface tool = mcpClient.getTools().get(0);
+                    String functionName = tool.name();
+                    String arguments = msgContent;
+                    String id = "1";
+                    Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
+                    Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id, cookie);
+                    LOG.info("Tool-Result: " + toolResult);
+
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);
+                    String text = null;
+                    if (!aToolContent.isEmpty()) {
+                        Map<String, Object> mapFirstContent = aToolContent.get(0);
+                        text = LightweightJsonHandler.getJsonValue(mapFirstContent, "text", String.class);
+                    }
+                    hasToolResponse = true;
+                    messagesWithTools.add(mapMessage);
+                    Map<String, Object> mapToolResponse = new LinkedHashMap<>();
+                    mapToolResponse.put("role", "tool");
+                    mapToolResponse.put("content", text);
+                    mapToolResponse.put("tool_call_id", id);
+                    messagesWithTools.add(mapToolResponse);
+                    LOG.fine(String.format("Next messages: %s", messagesWithTools));
                 }
             }
         }
@@ -461,9 +514,9 @@ public class UiServer {
                 }
                 properties.put(entry.getKey(), mapProp);
             }
+            parameters.put("required", mcpTool.inputSchema().required());
             parameters.put("properties", properties);
             function.put("parameters", parameters);
-            function.put("required", mcpTool.inputSchema().required());
             tool.put("function", function);
             listOpenAITools.add(tool);
         }
