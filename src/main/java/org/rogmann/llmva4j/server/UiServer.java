@@ -54,7 +54,7 @@ public class UiServer {
     private static final String PROP_MAX_TOOL_CALLS = "uiserver.max.toolCalls";
 
     /** pattern used to recognize a JSON response (i.e. probably tool call) */
-    private static final Pattern REG_EXP_JSON = Pattern.compile("[{]\".*[}]");
+    private static final Pattern REG_EXP_JSON = Pattern.compile("[{].*\".*[}]", Pattern.DOTALL);
 
     /**
      * Entry method, starts a web-server.
