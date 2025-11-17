@@ -117,6 +117,41 @@ public class UiServer {
             RequestForwarder requestForwarder) {
         LOG.info(String.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI()));
         if ("GET".equals(exchange.getRequestMethod())) {
+            String path = exchange.getRequestURI().getPath();
+            if ("/props".equals(path) || "/slots".equals(path)) {
+                String response;
+                if ("/props".equals(path)) {
+                    Map<String, Object> mapProps = new LinkedHashMap<String, Object>();
+                    Map<String, Object> mapDefGenSettings = new LinkedHashMap<String, Object>();
+                    Map<String, Object> mapParams = new LinkedHashMap<String, Object>();
+                    mapParams.put("top_k", 20);
+                    mapParams.put("top_p", 0.95f);
+                    mapDefGenSettings.put("params", mapParams);
+                    mapDefGenSettings.put("n_ctx", 32768);
+                    mapProps.put("default_generation_settings", mapDefGenSettings);
+                    mapProps.put("total_slots", 1);
+                    mapProps.put("model_path", "unknown model path");
+                    mapProps.put("modalities", Map.of("vision", false, "audio", false));
+                    mapProps.put("webui", "true");
+                    mapProps.put("build_info", "UiServer - build unknown");
+                    mapProps.put("x_frosch", "Gurke");
+                    response = LightweightJsonHandler.dumpJson(mapProps);
+                } else {
+                    response = "[{\"id\":0,\"n_ctx\":32768,\"speculative\":false,\"is_processing\":false}]";
+                }
+                try {
+                    exchange.getResponseHeaders().add("Content-Type", "application/json");
+                    exchange.getResponseHeaders().add("Keep-Alive", "timeout=5, max=100");
+                    var bufResponse = response.getBytes(StandardCharsets.UTF_8);
+                    exchange.sendResponseHeaders(200, bufResponse.length);
+                    var os = exchange.getResponseBody();
+                    os.write(bufResponse);
+                    os.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                return;
+            }
             processGetRequest(exchange, publicPath);
             return;
         }
@@ -609,9 +644,10 @@ public class UiServer {
     private static void sendError(IHttpExchange exchange, int code, String message) {
         try {
             var errorResponse = String.format("{\"error\": \"%s\"}", message);
-            exchange.sendResponseHeaders(code, errorResponse.length());
+            var bufResponse = errorResponse.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(code, bufResponse.length);
             var os = exchange.getResponseBody();
-            os.write(errorResponse.getBytes());
+            os.write(bufResponse);
             os.close();
         } catch (IOException e) {
             e.printStackTrace();
