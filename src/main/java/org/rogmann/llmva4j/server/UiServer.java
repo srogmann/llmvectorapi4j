@@ -455,16 +455,18 @@ public class UiServer {
                         LOG.info("Tool-Result: " + toolResult);
                         @SuppressWarnings("unchecked")
                         List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);
-                        String text = null;
-                        if (!aToolContent.isEmpty()) {
-                            Map<String, Object> mapFirstContent = aToolContent.get(0);
-                            text = LightweightJsonHandler.getJsonValue(mapFirstContent, "text", String.class);
+                        Object toolResponse = aToolContent.isEmpty() ? "no result" : LightweightJsonHandler.dumpJson(aToolContent.get(0));
+                        if (aToolContent.size() == 1) {
+                                Map<String, Object> mapFirstContent = aToolContent.get(0);
+                                if (mapFirstContent.containsKey("text")) {
+                                    toolResponse = LightweightJsonHandler.getJsonValue(mapFirstContent, "text", String.class);
+                                }
                         }
                         hasToolResponse = true;
                         messagesWithTools.add(mapMessage);
                         Map<String, Object> mapToolResponse = new LinkedHashMap<>();
                         mapToolResponse.put("role", "tool");
-                        mapToolResponse.put("content", text);
+                        mapToolResponse.put("content", toolResponse);
                         mapToolResponse.put("tool_call_id", id);
                         messagesWithTools.add(mapToolResponse);
                         LOG.fine(String.format("Next messages: %s", messagesWithTools));
