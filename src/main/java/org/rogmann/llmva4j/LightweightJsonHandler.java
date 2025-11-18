@@ -55,6 +55,9 @@ public class LightweightJsonHandler {
             else if (value instanceof Integer i) {
                 sb.append(i);
             }
+            else if (value instanceof Long l) {
+                sb.append(l);
+            }
             else if (value instanceof Float f) {
                 sb.append(f);
             }
