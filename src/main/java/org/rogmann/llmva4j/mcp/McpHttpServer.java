@@ -76,6 +76,21 @@ public class McpHttpServer {
         }
     }
 
+    /**
+     * Asks the service-loader about the defined tools.
+     * @param mapTools map of tools to be registered
+     */
+    public static void loadTools(Map<String, McpToolImplementation> mapTools) {
+        final ServiceLoader<McpToolImplementations> loaderTools = ServiceLoader.load(McpToolImplementations.class);
+        for (McpToolImplementations listSupplier : loaderTools) {
+            for (McpToolImplementation action : listSupplier.get()) {
+                String name = action.getName();
+                LOG.info(String.format("Register tool implementation: %s in %s", name, action));
+                mapTools.put(name, action);
+            }
+        }
+    }
+
     public static void handleRequest(IHttpExchange exchange, ConcurrentMap<String, McpToolImplementation> mapTools) {
         LOG.info(String.format("%s %s request %s", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI()));
         if ("GET".equals(exchange.getRequestMethod())) {
@@ -283,14 +298,7 @@ public class McpHttpServer {
 
         McpHttpServer mcpServer = new McpHttpServer();
 
-        ServiceLoader<McpToolImplementations> loaderTools = ServiceLoader.load(McpToolImplementations.class);
-        for (McpToolImplementations listSupplier : loaderTools) {
-            for (McpToolImplementation action : listSupplier.get()) {
-                String name = action.getName();
-                LOG.info(String.format("Register tool implementation: %s in %s", name, action));
-                mcpServer.mapTools.put(name, action);
-            }
-        }
+        loadTools(mcpServer.mapTools);
 
         mcpServer.startServer(host, port);
     }
