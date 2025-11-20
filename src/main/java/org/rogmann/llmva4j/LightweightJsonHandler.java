@@ -28,6 +28,17 @@ public class LightweightJsonHandler {
         return sb.toString();
     }
 
+    /**
+     * Dumps a list into JSON-format.
+     * @param list list
+     * @return JSON output
+     */
+    public static String dumpJson(List<Object> list) {
+        StringBuilder sb = new StringBuilder(100);
+        dumpJson(sb, list);
+        return sb.toString();
+    }
+
     @SuppressWarnings("unchecked")
     public static void dumpJson(StringBuilder sb, Map<String, Object> map) {
         sb.append('{');
