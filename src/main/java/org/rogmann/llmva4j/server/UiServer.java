@@ -50,8 +50,17 @@ public class UiServer {
     /** logger */
     private static final Logger LOG = Logger.getLogger(UiServer.class.getName());
 
+    /** property to set the name of the current model */
+    private static final String PROP_MODEL_NAME = "uiserver.model.path";
+
     /** property to set a maximum number of tool-calls (default is 3) in a request */
     private static final String PROP_MAX_TOOL_CALLS = "uiserver.max.toolCalls";
+
+    /**name of the property which is true, if the current model has vision capabilities (input) */
+    private static final String PROP_HAS_VISION = "uiserver.hasVision";
+
+    /**name of the property which is true, if the current model has audio capabilities (input) */
+    private static final String PROP_HAS_AUDIO = "uiserver.hasAudio";
 
     /** pattern used to recognize a JSON response (i.e. probably tool call) */
     private static final Pattern REG_EXP_JSON = Pattern.compile("[{].*\".*[}]", Pattern.DOTALL);
@@ -121,21 +130,7 @@ public class UiServer {
             if ("/props".equals(path) || "/slots".equals(path)) {
                 String response;
                 if ("/props".equals(path)) {
-                    Map<String, Object> mapProps = new LinkedHashMap<String, Object>();
-                    Map<String, Object> mapDefGenSettings = new LinkedHashMap<String, Object>();
-                    Map<String, Object> mapParams = new LinkedHashMap<String, Object>();
-                    mapParams.put("top_k", 20);
-                    mapParams.put("top_p", 0.95f);
-                    mapDefGenSettings.put("params", mapParams);
-                    mapDefGenSettings.put("n_ctx", 32768);
-                    mapProps.put("default_generation_settings", mapDefGenSettings);
-                    mapProps.put("total_slots", 1);
-                    mapProps.put("model_path", "unknown model path");
-                    mapProps.put("modalities", Map.of("vision", false, "audio", false));
-                    mapProps.put("webui", "true");
-                    mapProps.put("build_info", "UiServer - build unknown");
-                    mapProps.put("x_frosch", "Gurke");
-                    response = LightweightJsonHandler.dumpJson(mapProps);
+                    response = buildJsonProps();
                 } else {
                     response = "[{\"id\":0,\"n_ctx\":32768,\"speculative\":false,\"is_processing\":false}]";
                 }
@@ -236,6 +231,30 @@ public class UiServer {
             sendError(exchange, 500, "Internal server error: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Creates a llama.cpp compatible map with model properties.
+     * @return JSON map
+     */
+    public static String buildJsonProps() {
+        Map<String, Object> mapProps = new LinkedHashMap<String, Object>();
+        Map<String, Object> mapDefGenSettings = new LinkedHashMap<String, Object>();
+        Map<String, Object> mapParams = new LinkedHashMap<String, Object>();
+        mapParams.put("top_k", 20);
+        mapParams.put("top_p", 0.95f);
+        mapDefGenSettings.put("params", mapParams);
+        mapDefGenSettings.put("n_ctx", 32768);
+        mapProps.put("default_generation_settings", mapDefGenSettings);
+        mapProps.put("total_slots", 1);
+        String modelName = System.getProperty(PROP_MODEL_NAME, "unknown model path");
+        mapProps.put("model_path", modelName);
+        boolean hasVision = Boolean.getBoolean(PROP_HAS_VISION);
+        boolean hasAudio = Boolean.getBoolean(PROP_HAS_AUDIO);
+        mapProps.put("modalities", Map.of("vision", hasVision, "audio", hasAudio));
+        mapProps.put("webui", "true");
+        mapProps.put("build_info", "UiServer - build unknown");
+        return LightweightJsonHandler.dumpJson(mapProps);
     }
 
     /**
