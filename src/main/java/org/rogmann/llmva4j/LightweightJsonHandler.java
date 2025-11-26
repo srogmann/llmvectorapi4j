@@ -187,14 +187,14 @@ public class LightweightJsonHandler {
             else {
                 var sb = new StringBuilder();
                 while (true) {
-                    if (c == '}' || c == ',') {
+                    if (c == ']' || c == ',') {
                         break;
                     }
                     if ((c >= 'a' && c <= 'z') || (c == 'E') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+') {
                         sb.append(c);
                         c = readChar(br, false);
                     } else {
-                        throw new IllegalArgumentException("Illegal value character: " + c);
+                        throw new IllegalArgumentException(String.format("llegal value character ('%c'=0x%04x): %s", c, (int) c, list));
                     }
                 }
                 if (sb.length() == 0) {
@@ -204,6 +204,9 @@ public class LightweightJsonHandler {
             }
             list.add(value);
             needComma = (c != ',');
+            if (c== ']') {
+                break;
+            }
         }
         return list;
     }
