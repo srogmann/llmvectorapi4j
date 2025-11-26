@@ -282,17 +282,40 @@ public class UiServer {
     public static String forwardRequest(Map<String, Object> requestMap, List<Map<String, Object>> messagesWithTools,
             final List<Map<String, Object>> listOpenAITools, String llmUrl)
             throws MalformedURLException, URISyntaxException {
-        // Build request for LLM
-        var llmRequest = new HashMap<String, Object>();
-        if (!listOpenAITools.isEmpty()) {
-            llmRequest.put("tools", listOpenAITools);
+        Map<String, Object> llmRequest;
+        if (llmUrl.endsWith("/responses")) {
+            // Build request for LLM
+            llmRequest = new HashMap<>();
+            if (!listOpenAITools.isEmpty()) {
+                //llmRequest.put("tools", listOpenAITools);
+            }
+            LOG.fine(String.format("llm.response-out: %s", messagesWithTools));
+            final String modelName = System.getProperty(PROP_MODEL_NAME);
+            if (modelName != null) {
+                llmRequest.put("model", modelName);
+            }
+            llmRequest.put("input", messagesWithTools);
+            //llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
+            //llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
+            //llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
+            //llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
+        } else {
+            // Build request for LLM
+            llmRequest = new HashMap<>();
+            if (!listOpenAITools.isEmpty()) {
+                llmRequest.put("tools", listOpenAITools);
+            }
+            LOG.fine(String.format("llm.messages-out: %s", messagesWithTools));
+            final String modelName = System.getProperty(PROP_MODEL_NAME);
+            if (modelName != null) {
+                llmRequest.put("model", modelName);
+            }
+            llmRequest.put("messages", messagesWithTools);
+            llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
+            llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
+            llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
+            llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
         }
-        LOG.fine(String.format("llm.messages-out: %s", messagesWithTools));
-        llmRequest.put("messages", messagesWithTools);
-        llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
-        llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
-        llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
-        llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
 
         var sbRequest = new StringBuilder(200);
         LightweightJsonHandler.dumpJson(sbRequest, llmRequest);
@@ -337,6 +360,48 @@ public class UiServer {
             // Read the response in chunks.
             String sResponse = readResponse(connection);
             LOG.fine("Response: " + sResponse);
+            if (llmUrl.endsWith("/responses")) {
+                // Convert responses-response into chat/completions-response.
+                Map<String, Object> respResponses = LightweightJsonHandler.parseJsonDict(sResponse);
+                Map<String, Object> respChat = new LinkedHashMap<String, Object>();
+                respResponses.forEach((key, value) -> {
+                    if ("output".equals(key)) {
+                        List<Object> valueNew = new ArrayList<>();
+                        if (value instanceof List) {
+                            for (Object item : (List<?>) value) {
+                                if (item instanceof Map) {
+                                    @SuppressWarnings("unchecked")
+                                    Map<String, Object> mapItem = (Map<String, Object>) item;
+                                    Map<String, Object> newMap = new LinkedHashMap<>(mapItem);
+                                    Object oContent = newMap.get("content");
+                                    if (oContent instanceof List lContent) {
+                                        @SuppressWarnings("unchecked")
+                                        List<Map<String, Object>> listContent = lContent;
+                                        if (!listContent.isEmpty()) {
+                                            Map<String, Object> content0 = listContent.get(0);
+                                            Object oText = content0.get("text");
+                                            if (oText instanceof String contentText) {
+                                                newMap.put("content", contentText); // simple string instead of DictType.
+                                            }
+                                        }
+                                    }
+                                    LinkedHashMap<String, Object> mapMessage = new LinkedHashMap<String, Object>();
+                                    mapMessage.put("index", 0);
+                                    mapMessage.put("message", newMap);
+                                    valueNew.add(mapMessage);
+                                } else {
+                                    valueNew.add(item);
+                                }
+                            }
+                        }
+                        respChat.put("choices", valueNew);
+                    } else {
+                        respChat.put(key, value);
+                    }
+                });
+                sResponse = LightweightJsonHandler.dumpJson(respChat);
+                LOG.info("Server-Response (completion/chat-format): " + sResponse);
+            }
             uiResponse = sResponse;
         } catch (IOException e) {
             LOG.severe("IO-error while calling " + url);
@@ -457,7 +522,8 @@ public class UiServer {
             Map<String, Object> mapMessage = LightweightJsonHandler.getJsonValue(listChoices.get(0), "message", Map.class);
             if (mapMessage != null) {
                 List<Map<String, Object>> listToolCalls = LightweightJsonHandler.getJsonArrayDicts(mapMessage, "tool_calls");
-                String msgContent = LightweightJsonHandler.getJsonValue(mapMessage, "content", String.class);
+                Object oContent = mapMessage.get("content");
+                String msgContent = (oContent instanceof String s) ? s : null;
                 if (listToolCalls != null && !listToolCalls.isEmpty()) {
                     for (Map<String, Object> mapToolCall : listToolCalls) {
                         String type = LightweightJsonHandler.getJsonValue(mapToolCall, "type", String.class);
