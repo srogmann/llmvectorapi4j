@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.ServiceLoader;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
@@ -287,7 +288,19 @@ public class UiServer {
             // Build request for LLM
             llmRequest = new HashMap<>();
             if (!listOpenAITools.isEmpty()) {
-                //llmRequest.put("tools", listOpenAITools);
+                llmRequest.put("tool_choice", "auto");
+                List<Map<String, Object>> listTools = new ArrayList<>();
+                for (Map<String, Object> chatTool : listOpenAITools) {
+                    String type = LightweightJsonHandler.getJsonValue(chatTool, "type", String.class);
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> mapFunction = (Map<String, Object>) chatTool.get("function");
+                    if ("function".equals(type) && mapFunction != null) {
+                        Map<String, Object> responsesTool = new LinkedHashMap<String, Object>(mapFunction);
+                        responsesTool.put("type", type);
+                        listTools.add(responsesTool);
+                    }
+                }
+                llmRequest.put("tools", listTools);
             }
             LOG.fine(String.format("llm.response-out: %s", messagesWithTools));
             final String modelName = System.getProperty(PROP_MODEL_NAME);
@@ -363,45 +376,83 @@ public class UiServer {
             if (llmUrl.endsWith("/responses")) {
                 // Convert responses-response into chat/completions-response.
                 Map<String, Object> respResponses = LightweightJsonHandler.parseJsonDict(sResponse);
-                Map<String, Object> respChat = new LinkedHashMap<String, Object>();
+                Map<String, Object> respChat = new LinkedHashMap<>();
+
                 respResponses.forEach((key, value) -> {
                     if ("output".equals(key)) {
-                        List<Object> valueNew = new ArrayList<>();
+                        List<Object> choices = new ArrayList<>();
+                        int index = 0;
                         if (value instanceof List) {
                             for (Object item : (List<?>) value) {
                                 if (item instanceof Map) {
                                     @SuppressWarnings("unchecked")
                                     Map<String, Object> mapItem = (Map<String, Object>) item;
                                     Map<String, Object> newMap = new LinkedHashMap<>(mapItem);
+
+                                    // Copy role.
+                                    if (mapItem.containsKey("role")) {
+                                        newMap.put("role", mapItem.get("role"));
+                                    }
+
                                     Object oContent = newMap.get("content");
-                                    if (oContent instanceof List lContent) {
+                                    if (oContent instanceof List) {
                                         @SuppressWarnings("unchecked")
-                                        List<Map<String, Object>> listContent = lContent;
-                                        if (!listContent.isEmpty()) {
-                                            Map<String, Object> content0 = listContent.get(0);
-                                            Object oText = content0.get("text");
-                                            if (oText instanceof String contentText) {
-                                                newMap.put("content", contentText); // simple string instead of DictType.
+                                        List<Map<String, Object>> contentList = (List<Map<String, Object>>) oContent;
+                                        StringBuilder textBuilder = new StringBuilder();
+                                        List<Map<String, Object>> toolCalls = new ArrayList<>();
+
+                                        for (Map<String, Object> contentItem : contentList) {
+                                            Object type = contentItem.get("type");
+                                            if ("text".equals(type)) {
+                                                Object text = contentItem.get("text");
+                                                if (text instanceof String) {
+                                                    textBuilder.append(text);
+                                                }
+                                            } else if ("tool_call".equals(type)) {
+                                                Map<String, Object> toolCall = new LinkedHashMap<>();
+                                                toolCall.put("id", contentItem.get("id"));
+                                                toolCall.put("type", "function");
+                                                toolCall.put("function", contentItem.get("function"));
+                                                toolCalls.add(toolCall);
                                             }
                                         }
+
+                                        if (!toolCalls.isEmpty()) {
+                                            newMap.put("content", textBuilder.length() > 0 ? textBuilder.toString() : null);
+                                            newMap.put("tool_calls", toolCalls);
+                                        } else {
+                                            newMap.put("content", textBuilder.toString());
+                                        }
                                     }
-                                    LinkedHashMap<String, Object> mapMessage = new LinkedHashMap<String, Object>();
-                                    mapMessage.put("index", 0);
-                                    mapMessage.put("message", newMap);
-                                    valueNew.add(mapMessage);
-                                } else {
-                                    valueNew.add(item);
+
+                                    Map<String, Object> choice = new LinkedHashMap<>();
+                                    choice.put("index", index++);
+                                    choice.put("message", newMap);
+                                    choices.add(choice);
                                 }
                             }
                         }
-                        respChat.put("choices", valueNew);
-                    } else {
+                        respChat.put("choices", choices);
+                    } else if (!"output".equals(key)) {
                         respChat.put(key, value);
                     }
                 });
+
+                // Add optional fields.
+                if (!respChat.containsKey("id")) {
+                    respChat.put("id", "chat-" + UUID.randomUUID());
+                }
+                if (!respChat.containsKey("created")) {
+                    respChat.put("created", System.currentTimeMillis() / 1000);
+                }
+                if (!respChat.containsKey("model") && respResponses.containsKey("model")) {
+                    respChat.put("model", respResponses.get("model"));
+                }
+
                 sResponse = LightweightJsonHandler.dumpJson(respChat);
                 LOG.info("Server-Response (completion/chat-format): " + sResponse);
             }
+
             uiResponse = sResponse;
         } catch (IOException e) {
             LOG.severe("IO-error while calling " + url);
@@ -520,11 +571,44 @@ public class UiServer {
         if (listChoices != null && !listChoices.isEmpty()) {
             @SuppressWarnings("unchecked")
             Map<String, Object> mapMessage = LightweightJsonHandler.getJsonValue(listChoices.get(0), "message", Map.class);
+            if ("reasoning".equals(mapMessage.get("type")) && listChoices.size() > 1) {
+                LOG.info("skipped reasoning message");
+                @SuppressWarnings("unchecked")
+                Map<String, Object> mapMessage1 = LightweightJsonHandler.getJsonValue(listChoices.get(1), "message", Map.class);
+                mapMessage = mapMessage1;
+            }
             if (mapMessage != null) {
                 List<Map<String, Object>> listToolCalls = LightweightJsonHandler.getJsonArrayDicts(mapMessage, "tool_calls");
                 Object oContent = mapMessage.get("content");
                 String msgContent = (oContent instanceof String s) ? s : null;
-                if (listToolCalls != null && !listToolCalls.isEmpty()) {
+                if ("function_call".equals(mapMessage.get("type"))) {
+                    String functionName = LightweightJsonHandler.getJsonValue(mapMessage, "name", String.class);
+                    String arguments = LightweightJsonHandler.getJsonValue(mapMessage, "arguments", String.class);
+                    String id = LightweightJsonHandler.getJsonValue(mapMessage, "id", String.class);
+                    Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
+                    Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id, cookie);
+                    LOG.info("Tool-Result (function_call): " + toolResult);
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);
+                    Object toolResponse = aToolContent.isEmpty() ? "no result" : LightweightJsonHandler.dumpJson(aToolContent.get(0));
+                    if (aToolContent.size() == 1) {
+                            Map<String, Object> mapFirstContent = aToolContent.get(0);
+                            if (mapFirstContent.containsKey("text")) {
+                                toolResponse = LightweightJsonHandler.getJsonValue(mapFirstContent, "text", String.class);
+                            }
+                    }
+                    hasToolResponse = true;
+                    Map<String, Object> mapMessageWithRole = new LinkedHashMap<>(mapMessage);
+                    mapMessageWithRole.put("role", "assistant");
+                    messagesWithTools.add(mapMessageWithRole);
+                    Map<String, Object> mapToolResponse = new LinkedHashMap<>();
+                    mapToolResponse.put("role", "tool");
+                    mapToolResponse.put("content", toolResponse);
+                    mapToolResponse.put("tool_call_id", id);
+                    messagesWithTools.add(mapToolResponse);
+                    LOG.fine(String.format("Next messages: %s", messagesWithTools));
+                }
+                else if (listToolCalls != null && !listToolCalls.isEmpty()) {
                     for (Map<String, Object> mapToolCall : listToolCalls) {
                         String type = LightweightJsonHandler.getJsonValue(mapToolCall, "type", String.class);
                         if (!"function".equals(type)) {
