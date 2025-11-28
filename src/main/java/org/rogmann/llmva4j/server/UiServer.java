@@ -297,6 +297,7 @@ public class UiServer {
                     if ("function".equals(type) && mapFunction != null) {
                         Map<String, Object> responsesTool = new LinkedHashMap<String, Object>(mapFunction);
                         responsesTool.put("type", type);
+                        responsesTool.put("strict", true);
                         listTools.add(responsesTool);
                     }
                 }
@@ -307,7 +308,27 @@ public class UiServer {
             if (modelName != null) {
                 llmRequest.put("model", modelName);
             }
-            llmRequest.put("input", messagesWithTools);
+            List<Map<String, Object>> listMessagesResponses = new ArrayList<>();
+            for (Map<String, Object> msg : messagesWithTools) {
+                String role = LightweightJsonHandler.getJsonValue(msg, "role", String.class);
+                if ("function_call".equals(msg.get("type"))) {
+                    Map<String, Object> mapTool = new LinkedHashMap<String, Object>(msg);
+                    mapTool.remove("role");
+                    mapTool.remove("status");
+                    listMessagesResponses.add(mapTool);
+                }
+                else if ("tool".equals(role)) {
+                    Map<String, Object> mapTool = new LinkedHashMap<String, Object>();
+                    mapTool.put("id", msg.get("tool_call_id"));
+                    mapTool.put("call_id", msg.get("tool_call_id"));
+                    mapTool.put("type", "function_call_output");
+                    mapTool.put("output", msg.get("content"));
+                    listMessagesResponses.add(mapTool);
+                } else {
+                    listMessagesResponses.add(msg);
+                }
+            }
+            llmRequest.put("input", listMessagesResponses);
             //llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
             //llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
             //llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
@@ -352,12 +373,18 @@ public class UiServer {
             }
 
             int responseCode = connection.getResponseCode();
-            if (responseCode >= HttpURLConnection.HTTP_INTERNAL_ERROR) {
+            if (responseCode >= HttpURLConnection.HTTP_BAD_REQUEST) {
                 System.err.format("%s HTTP-error accessing %s: %s - %s%n", LocalDateTime.now(),
                         url, responseCode, connection.getResponseMessage());
                 try (InputStream errorStream = connection.getErrorStream()) {
                     String sResponse = readResponse(errorStream);
-                    LOG.info("Error-Response: " + sResponse);
+                    int maxLen = 5000;
+                    int sLen = sResponse.length();
+                    if (sLen > maxLen) {
+                        LOG.info("Error-Response (shortened): " + sResponse.substring(0,  maxLen - 200) + "[...]" + sResponse.substring(sLen - 200, sLen));
+                    } else {
+                        LOG.info("Error-Response: " + sResponse);
+                    }
                 }
                 return null;
             }
@@ -585,6 +612,7 @@ public class UiServer {
                     String functionName = LightweightJsonHandler.getJsonValue(mapMessage, "name", String.class);
                     String arguments = LightweightJsonHandler.getJsonValue(mapMessage, "arguments", String.class);
                     String id = LightweightJsonHandler.getJsonValue(mapMessage, "id", String.class);
+                    String callId = LightweightJsonHandler.getJsonValue(mapMessage, "call_id", String.class);
                     Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
                     Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id, cookie);
                     LOG.info("Tool-Result (function_call): " + toolResult);
@@ -604,7 +632,8 @@ public class UiServer {
                     Map<String, Object> mapToolResponse = new LinkedHashMap<>();
                     mapToolResponse.put("role", "tool");
                     mapToolResponse.put("content", toolResponse);
-                    mapToolResponse.put("tool_call_id", id);
+                    mapToolResponse.put("id", id);
+                    mapToolResponse.put("tool_call_id",callId);
                     messagesWithTools.add(mapToolResponse);
                     LOG.fine(String.format("Next messages: %s", messagesWithTools));
                 }
