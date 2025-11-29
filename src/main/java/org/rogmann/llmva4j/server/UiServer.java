@@ -409,7 +409,9 @@ public class UiServer {
                     if ("output".equals(key)) {
                         List<Object> choices = new ArrayList<>();
                         int index = 0;
+                        String reasoningText = null;
                         if (value instanceof List) {
+loopOutput:
                             for (Object item : (List<?>) value) {
                                 if (item instanceof Map) {
                                     @SuppressWarnings("unchecked")
@@ -430,10 +432,22 @@ public class UiServer {
 
                                         for (Map<String, Object> contentItem : contentList) {
                                             Object type = contentItem.get("type");
-                                            if ("text".equals(type)) {
+                                            boolean isReasoningText = "reasoning_text".equals(type);
+                                            boolean isOutputText = "output_text".equals(type);
+                                            if (isReasoningText || isOutputText) {
                                                 Object text = contentItem.get("text");
-                                                if (text instanceof String) {
+                                                if (text instanceof String sText) {
                                                     textBuilder.append(text);
+                                                    if (isReasoningText) {
+                                                        // We add the reasoning-text in the next message.
+                                                        LOG.finer("Reasoning-text: " + sText);
+                                                        reasoningText = sText;
+                                                        continue loopOutput;
+                                                    }
+                                                }
+                                                if (isOutputText && reasoningText != null) {
+                                                    newMap.put("reasoning_content", reasoningText);
+                                                    reasoningText = null;
                                                 }
                                             } else if ("tool_call".equals(type)) {
                                                 Map<String, Object> toolCall = new LinkedHashMap<>();
