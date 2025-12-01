@@ -263,6 +263,9 @@ public class UiServer {
      * and preparing the request with the provided configuration parameters. This method constructs the request
      * payload from the given message history and tools, sends it using HTTP POST, and returns the raw response string.
      *
+     * <p>The request is modified to always set the "stream" parameter to false before
+     *                             being sent, even if it was originally true.</p>
+     *
      * @param requestMap           The request configuration map containing parameters such as temperature,
      *                             max_tokens, top_p, and stream. These values are used to configure the LLM request.
      * @param messagesWithTools    A list of message dictionaries to include in the LLM request. This typically
@@ -276,9 +279,6 @@ public class UiServer {
      *
      * @throws MalformedURLException If the provided llmUrl is invalid and cannot be converted to a valid URL.
      * @throws URISyntaxException    If the provided llmUrl is invalid and cannot be converted to a valid URI.
-     *
-     * @note                       The request is modified to always set the "stream" parameter to false before
-     *                             being sent, even if it was originally true.
      */
     public static String forwardRequest(Map<String, Object> requestMap, List<Map<String, Object>> messagesWithTools,
             final List<Map<String, Object>> listOpenAITools, String llmUrl)

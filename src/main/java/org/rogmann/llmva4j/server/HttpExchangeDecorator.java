@@ -17,7 +17,7 @@ public class HttpExchangeDecorator implements IHttpExchange {
 
     /**
      * Constructor
-     * @param exhange HTTP exchange
+     * @param exchange HTTP exchange
      */
     public HttpExchangeDecorator(HttpExchange exchange) {
         this.exchange = exchange;

@@ -12,7 +12,12 @@ import org.rogmann.llmva4j.LightweightJsonHandler;
 public class JsonRpc {
     private static final String RPC_VERSION = "2.0";
 
-    /** JSON RPC 2.0 request */
+    /**
+     * JSON RPC 2.0 request
+     * @param method RPC method
+     * @param params RPC parameters
+     * @param id request ID
+     */
     public record JsonRpcRequest(String method, Map<String, Object> params, Object id) { }
     
     public record JsonRpcResponse(Map<String, Object> result, JsonRpcError error, Object id) { }

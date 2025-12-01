@@ -31,8 +31,6 @@ public interface IHttpExchange {
      * <p> The keys in this {@code IHeaders} are the header names, while the
      * values are a {@link java.util.List} of Strings.</p>
      *
-     * <p> The keys in {@code Headers} are case-insensitive.</p>
-     *
      * @return a read-only {@code IHeaders} which can be used to access request
      *         headers.
      */
@@ -47,7 +45,7 @@ public interface IHttpExchange {
     InputStream getRequestBody();
 
     /**
-     * Returns a mutable {@link Headers} into which the HTTP response headers
+     * Returns a mutable {@link IHeaders} into which the HTTP response headers
      * can be stored and which will be transmitted as part of this response.
      *
      * <p> The keys in the {@code Headers} are the header names, while the
@@ -76,7 +74,7 @@ public interface IHttpExchange {
      * @param rCode          the response code to send
      * @param responseLength if {@literal > 0}, specifies a fixed response body
      *                       length and that exact number of bytes must be written
-     *                       to the stream acquired from {@link #getResponseCode()}
+     *                       to the stream acquired from {@link #getResponseBody()}
      *                       If {@literal == 0}, then chunked encoding is used,
      *                       and an arbitrary number of bytes may be written.
      *                       If {@literal <= -1}, then no response body length is
