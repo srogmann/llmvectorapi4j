@@ -162,6 +162,7 @@ public class McpHttpClient {
             throw new RuntimeException("Unknown tool: " + functionName);
         }
         LOG.info(String.format("Call %s with: %s", functionName, arguments));
+        McpToolLogger.logCall(functionName, id, arguments);
         Map<String, Object> mapParams = new LinkedHashMap<>(2);
         mapParams.put("name", functionName);
         mapParams.put("arguments", arguments);
