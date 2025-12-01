@@ -70,7 +70,7 @@ public class McpToolLogger {
         });
         Path pathLogfile = Path.of(sPath);
         try (BufferedWriter writer = Files.newBufferedWriter(pathLogfile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            writer.write(String.format("%s call %-20s (%6d): id %s, args %s", DTF_ISO.format(LocalDateTime.now()),
+            writer.write(String.format("%s call %-20s (%6d): id %s, args %s%n", DTF_ISO.format(LocalDateTime.now()),
                     toolName, lenArgs.get(), id, sbArgs));
         } catch (IOException e) {
             if (IS_FIRST_ERROR.getAndSet(false)) {
