@@ -39,7 +39,6 @@ public class LightweightJsonHandler {
         return sb.toString();
     }
 
-    @SuppressWarnings("unchecked")
     public static void dumpJson(StringBuilder sb, Map<String, Object> map) {
         sb.append('{');
         String as = "";
@@ -48,80 +47,60 @@ public class LightweightJsonHandler {
             dumpString(sb, entry.getKey());
             sb.append(':');
             var value = entry.getValue();
-            if (value == null) {
-                sb.append("null");
-            }
-            else if (value instanceof String s) {
-                dumpString(sb, s);
-            }
-            else if (value instanceof List) {
-                dumpJson(sb, (List<Object>) value);
-            }
-            else if (value instanceof Map) {
-                dumpJson(sb, (Map<String, Object>) value);
-            }
-            else if (value instanceof Boolean b) {
-                sb.append(b);
-            }
-            else if (value instanceof Integer i) {
-                sb.append(i);
-            }
-            else if (value instanceof Long l) {
-                sb.append(l);
-            }
-            else if (value instanceof Float f) {
-                sb.append(f);
-            }
-            else if (value instanceof BigDecimal bd) {
-                sb.append(bd);
-            }
-            else if (value instanceof byte[] buf) {
-                sb.append(Arrays.toString(buf));
-            }
-            else {
-                throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
-            }
+            dumpJsonValue(sb, value);
             as = ",";
         }
         sb.append('}');
     }
 
-    @SuppressWarnings("unchecked")
     public static void dumpJson(StringBuilder sb, List<Object> list) {
         sb.append('[');
         String as = "";
         for (Object value : list) {
             sb.append(as);
-            if (value == null) {
-                sb.append("null");
-            }
-            else if (value instanceof String s) {
-                dumpString(sb, s);
-            }
-            else if (value instanceof List listValue) {
-                dumpJson(sb, listValue);
-            }
-            else if (value instanceof Map) {
-                dumpJson(sb, (Map<String, Object>) value);
-            }
-            else if (value instanceof Boolean b) {
-                sb.append(b);
-            }
-            else if (value instanceof Integer i) {
-                sb.append(i);
-            }
-            else if (value instanceof Float f) {
-                sb.append(f);
-            }
-            else if (value instanceof BigDecimal bd) {
-                sb.append(bd);
-            }
-            else {
-                throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
-            }
+            dumpJsonValue(sb, value);
             as = ",";
         }
         sb.append(']');
+    }
+
+    /**
+     * Dumps a JSON value.
+     * @param sb string builder to be used
+     * @param value value to be dumped
+     */
+    @SuppressWarnings("unchecked")
+    public static void dumpJsonValue(StringBuilder sb, Object value) {
+        if (value == null) {
+            sb.append("null");
+        }
+        else if (value instanceof String s) {
+            dumpString(sb, s);
+        }
+        else if (value instanceof List listValue) {
+            dumpJson(sb, listValue);
+        }
+        else if (value instanceof Map) {
+            dumpJson(sb, (Map<String, Object>) value);
+        }
+        else if (value instanceof Boolean b) {
+            sb.append(b);
+        }
+        else if (value instanceof Integer i) {
+            sb.append(i);
+        }
+        else if (value instanceof Float f) {
+            sb.append(f);
+        }
+        else if (value instanceof BigDecimal bd) {
+            sb.append(bd);
+        }
+        else if (value instanceof byte[] buf) {
+            sb.append(Arrays.toString(buf));
+        }
+        else {
+            throw new IllegalArgumentException("Unexpected value of type " + value.getClass());
+        }
     }
 
     private static void dumpString(StringBuilder sb, String s) {
