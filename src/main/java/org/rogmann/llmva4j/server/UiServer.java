@@ -624,6 +624,11 @@ loopOutput:
                 String msgContent = (oContent instanceof String s) ? s : null;
                 if ("function_call".equals(mapMessage.get("type"))) {
                     String functionName = LightweightJsonHandler.getJsonValue(mapMessage, "name", String.class);
+                    if (functionName != null && functionName.contains("<|channel|>")) {
+                        // e.g. "<|channel|>commentary" after function name.
+                        LOG.warning(String.format("Invalid function-name in tool-call: %s", functionName));
+                        functionName = functionName.replaceFirst("<|channel|>.*", "");
+                    }
                     String arguments = LightweightJsonHandler.getJsonValue(mapMessage, "arguments", String.class);
                     String id = LightweightJsonHandler.getJsonValue(mapMessage, "id", String.class);
                     String callId = LightweightJsonHandler.getJsonValue(mapMessage, "call_id", String.class);
