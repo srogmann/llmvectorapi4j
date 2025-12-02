@@ -123,7 +123,33 @@ public class UiServer {
         }
     }
 
+    /**
+     * Handles HTTP requests by processing the request body, forwarding it to the LLM service,
+     * integrating with MCP client for tool execution, and managing the response back to the client.
+     *
+     * @param exchange The HTTP exchange object representing the incoming request
+     * @param llmUrl The URL of the Language Model service to forward requests to
+     * @param publicPath The path to serve static resources from
+     * @param mcpClient The MCP client for handling tool execution and model control
+     * @param requestForwarder The component responsible for forwarding requests to the LLM service
+     */
     public static void handleRequest(IHttpExchange exchange, String llmUrl, String publicPath, McpHttpClient mcpClient,
+            RequestForwarder requestForwarder) {
+                handleRequest(exchange, llmUrl, publicPath, null, mcpClient, requestForwarder);
+    }
+
+    /**
+     * Handles HTTP requests by processing the request body, forwarding it to the LLM service,
+     * integrating with MCP client for tool execution, and managing the response back to the client.
+     *
+     * @param exchange The HTTP exchange object representing the incoming request
+     * @param llmUrl The URL of the Language Model service to forward requests to
+     * @param publicPath The path to serve static resources from
+     * @param systemPrompt Optional system prompt to be included in the LLM request
+     * @param mcpClient The MCP client for handling tool execution and model control
+     * @param requestForwarder The component responsible for forwarding requests to the LLM service
+     */
+    public static void handleRequest(IHttpExchange exchange, String llmUrl, String publicPath, String systemPrompt, McpHttpClient mcpClient,
             RequestForwarder requestForwarder) {
         LOG.info(String.format("%s %s request %s%n", LocalDateTime.now(), exchange.getRequestMethod(), exchange.getRequestURI()));
         if ("GET".equals(exchange.getRequestMethod())) {
@@ -180,6 +206,21 @@ public class UiServer {
             // Parse incoming JSON
             var requestMap = LightweightJsonHandler.parseJsonDict(httpRequestBody);
             var messages = LightweightJsonHandler.getJsonArrayDicts(requestMap, "messages");
+            if (systemPrompt != null && !messages.isEmpty()) {
+                Map<String, Object> firstMsg = messages.get(0);
+                String role = LightweightJsonHandler.getJsonValue(firstMsg, "role", String.class);
+                // Insert or update system prompt
+                if ("system".equals(role)) {
+                    firstMsg.put("content", systemPrompt);
+                    LOG.fine(String.format("System-Prompt (length %d) was updated", systemPrompt.length()));
+                } else {
+                    LinkedHashMap<String, Object> mapSystemPrompt = new LinkedHashMap<>();
+                    mapSystemPrompt.put("role", "system");
+                    mapSystemPrompt.put("content", systemPrompt);
+                    messages.add(0, mapSystemPrompt);
+                    LOG.fine(String.format("System-Prompt (length %d) was inserted", systemPrompt.length()));
+                }
+            }
             var messagesWithTools = new ArrayList<>(messages);
 
             boolean hasToolResponse = false;
