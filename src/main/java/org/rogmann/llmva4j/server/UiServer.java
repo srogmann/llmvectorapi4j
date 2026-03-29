@@ -28,6 +28,7 @@ import java.util.Map.Entry;
 import java.util.ServiceLoader;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
@@ -54,14 +55,20 @@ public class UiServer {
     /** property to set the name of the current model */
     private static final String PROP_MODEL_NAME = "uiserver.model.path";
 
-    /** property to set a maximum number of tool-calls (default is 3) in a request */
+    /** property to set a maximum number of tool-calls (default is 100) in a request */
     private static final String PROP_MAX_TOOL_CALLS = "uiserver.max.toolCalls";
+
+    /** property to set a maximum number of tokens (default is 240000) */
+    private static final String PROP_MAX_TOKENS = "uiserver.max.tokens";
 
     /**name of the property which is true, if the current model has vision capabilities (input) */
     private static final String PROP_HAS_VISION = "uiserver.hasVision";
 
     /**name of the property which is true, if the current model has audio capabilities (input) */
     private static final String PROP_HAS_AUDIO = "uiserver.hasAudio";
+
+    /** default of maximum number of tokens (240000) */
+    private static final int DEFAULT_MAX_TOKENS = Integer.parseInt(System.getProperty(PROP_MAX_TOKENS, "240000"));
 
     /** pattern used to recognize a JSON response (i.e. probably tool call) */
     private static final Pattern REG_EXP_JSON = Pattern.compile("[{].*\".*[}]", Pattern.DOTALL);
@@ -234,7 +241,7 @@ public class UiServer {
                     // Check for a tool-call.
                     hasToolResponse = checkForToolCall(mcpClient, messagesWithTools, uiResponse, cookie);
                     numToolCalls++;
-                    int maxNumToolCalls = Integer.getInteger(PROP_MAX_TOOL_CALLS, 3);
+                    int maxNumToolCalls = Integer.getInteger(PROP_MAX_TOOL_CALLS, 100);
                     if (hasToolResponse && numToolCalls > maxNumToolCalls) {
                         // We don't want an infinite loop.
                         LOG.severe(String.format("Reached maximum number of tool-calls (%d) in a request", maxNumToolCalls));
@@ -386,9 +393,9 @@ public class UiServer {
                 llmRequest.put("model", modelName);
             }
             llmRequest.put("messages", messagesWithTools);
-            llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
-            llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", 100));
-            llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
+            //llmRequest.put("temperature", LightweightJsonHandler.readFloat(requestMap, "temperature", 0.7f));
+            llmRequest.put("max_tokens", LightweightJsonHandler.readInt(requestMap, "max_tokens", DEFAULT_MAX_TOKENS));
+            //llmRequest.put("top_p", LightweightJsonHandler.readFloat(requestMap, "top_p", 1.0f));
             llmRequest.put("stream", LightweightJsonHandler.readBoolean(requestMap, "stream", false));
         }
 
@@ -708,8 +715,18 @@ loopOutput:
                         String functionName = LightweightJsonHandler.getJsonValue(mapFunction, "name", String.class);
                         String arguments = LightweightJsonHandler.getJsonValue(mapFunction, "arguments", String.class);
                         String id = LightweightJsonHandler.getJsonValue(mapToolCall, "id", String.class);
-                        Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
-                        Map<String, Object> toolResult = mcpClient.callTool(functionName, mapArgs, id, cookie);
+                        Map<String, Object> toolResult;
+                        try {
+                            Map<String, Object> mapArgs = LightweightJsonHandler.parseJsonDict(arguments);
+                            toolResult = mcpClient.callTool(functionName, mapArgs, id, cookie);
+                        } catch (IllegalArgumentException e) {
+                            LOG.log(Level.SEVERE, "Error JSON-parsing tool-call request", e);
+                            LOG.info("JSON: "+ arguments);
+                            toolResult = new LinkedHashMap<String, Object>();
+                            Map<String, Object> toolResponse = new LinkedHashMap<>();
+                            toolResponse.put("text", "Error: Invalid JSON-tool-call");
+                            toolResult.put("content", List.of(toolResponse));
+                        }
                         LOG.info("Tool-Result: " + toolResult);
                         @SuppressWarnings("unchecked")
                         List<Map<String, Object>> aToolContent = LightweightJsonHandler.getJsonValue(toolResult, "content", List.class);
