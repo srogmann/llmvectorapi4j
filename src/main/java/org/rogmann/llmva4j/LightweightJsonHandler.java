@@ -255,46 +255,50 @@ public class LightweightJsonHandler {
                 throw new IllegalArgumentException("Illegal key: " + c);
             }
             String key = readString(br);
-            c = readChar(br, true);
-            if (c != ':') {
-                throw new IllegalArgumentException("Illegal character after key: " + c);
-            }
-            c = readChar(br, true);
-            Object value;
-            if (c == '"') {
-                value = readString(br);
-            }
-            else if (c == '{') {
-                value = parseJsonDict(br);
-            }
-            else if (c == '[') {
-                value = parseJsonArray(br);
-            }
-            else {
-                var sb = new StringBuilder();
-                while (true) {
-                    if (c == '}' || c == ',') {
+            try {
+                c = readChar(br, true);
+                if (c != ':') {
+                    throw new IllegalArgumentException("Illegal character after key: " + c);
+                }
+                c = readChar(br, true);
+                Object value;
+                if (c == '"') {
+                    value = readString(br);
+                }
+                else if (c == '{') {
+                    value = parseJsonDict(br);
+                }
+                else if (c == '[') {
+                    value = parseJsonArray(br);
+                }
+                else {
+                    var sb = new StringBuilder();
+                    while (true) {
+                        if (c == '}' || c == ',') {
+                            break;
+                        }
+                        if ((c >= 'a' && c <= 'z') || (c == 'E') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+') {
+                            sb.append(c);
+                            c = readChar(br, false);
+                        } else if ((c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
+                            break;
+                        } else {
+                            throw new IllegalArgumentException(String.format("Illegal value character (\\u%04x, '%c')", (int) c, c));
+                        }
+                    }
+                    if (sb.length() == 0) {
+                        throw new IllegalArgumentException("Missing value of key " + key);
+                    }
+                    value = parseJsonValue(sb.toString());
+                    if (c == '}') {
+                        map.put(key, value);
                         break;
                     }
-                    if ((c >= 'a' && c <= 'z') || (c == 'E') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+') {
-                        sb.append(c);
-                        c = readChar(br, false);
-                    } else if ((c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
-                        break;
-                    } else {
-                        throw new IllegalArgumentException(String.format("Illegal value character (\\u%04x, '%c')", (int) c, c));
-                    }
                 }
-                if (sb.length() == 0) {
-                    throw new IllegalArgumentException("Missing value of key " + key);
-                }
-                value = parseJsonValue(sb.toString());
-                if (c == '}') {
-                    map.put(key, value);
-                    break;
-                }
+                map.put(key, value);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Error while reading value of key (%s)".formatted(key), e);
             }
-            map.put(key, value);
             needComma = (c != ',');
         }
         return map;
