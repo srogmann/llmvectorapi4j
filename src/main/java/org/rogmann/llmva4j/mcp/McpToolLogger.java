@@ -33,17 +33,18 @@ public class McpToolLogger {
     private static final int MAX_VALUE_LEN = Math.min(Integer.getInteger("mcp.logfile.maxValueLen", 2000), LEN_TAIL);
     
     /** date-time format */
-    private static final DateTimeFormatter DTF_ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
+    private static final DateTimeFormatter DTF_ISO = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
     
     private static final AtomicBoolean IS_FIRST_ERROR = new AtomicBoolean(true);
 
     /**
      * Logs a tool-call, if the system-property "mcp.logfile" has been set.
+     * @param type message type, e.g. "call", "resp"
      * @param toolName name of the tool
      * @param id id of the call
      * @param arguments arguments of the tool call
      */
-    public static final void logCall(String toolName, String id, Map<String, Object> arguments) {
+    public static final void logCall(String type, String toolName, String id, Map<String, Object> arguments) {
         String sPath = System.getProperty(PROP_MCP_LOGFILE);
         if (sPath == null) {
             return;
@@ -56,9 +57,10 @@ public class McpToolLogger {
             LightweightJsonHandler.dumpJsonValue(sbValue, entry.getValue());
             lenArgs.addAndGet(sbValue.length());
             if (sbValue.length() > MAX_VALUE_LEN) {
-                String tail = sbValue.substring(sbValue.length() - LEN_TAIL, MAX_VALUE_LEN);
+                int len = sbValue.length();
+                String tail = sbValue.substring(sbValue.length() - LEN_TAIL);
                 sbValue.setLength(MAX_VALUE_LEN - LEN_TAIL);
-                sbValue.append("[...]");
+                sbValue.append("[...len=%d...]".formatted(len));
                 sbValue.append(tail);
             }
             if (!sbArgs.isEmpty()) {
@@ -70,7 +72,7 @@ public class McpToolLogger {
         });
         Path pathLogfile = Path.of(sPath);
         try (BufferedWriter writer = Files.newBufferedWriter(pathLogfile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-            writer.write(String.format("%s call %-20s (%6d): id %s, args %s%n", DTF_ISO.format(LocalDateTime.now()),
+            writer.write(String.format("%s %s %-20s (%6d): id %s, args %s%n", DTF_ISO.format(LocalDateTime.now()), type,
                     toolName, lenArgs.get(), id, sbArgs));
         } catch (IOException e) {
             if (IS_FIRST_ERROR.getAndSet(false)) {

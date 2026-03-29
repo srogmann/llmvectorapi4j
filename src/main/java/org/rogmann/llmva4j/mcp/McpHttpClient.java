@@ -162,13 +162,14 @@ public class McpHttpClient {
             throw new RuntimeException("Unknown tool: " + functionName);
         }
         LOG.info(String.format("Call %s with: %s", functionName, arguments));
-        McpToolLogger.logCall(functionName, id, arguments);
+        McpToolLogger.logCall("call", functionName, id, arguments);
         Map<String, Object> mapParams = new LinkedHashMap<>(2);
         mapParams.put("name", functionName);
         mapParams.put("arguments", arguments);
         JsonRpcRequest rpcRequest = new JsonRpcRequest("tools/call", mapParams, id);
         LOG.fine(String.format("rpc-request: %s", rpcRequest));
         JsonRpcResponse rpcResponse = sendJsonRpcRequest(mcpToolWithUri.url(), rpcRequest, cookie);
+        McpToolLogger.logCall("resp", functionName, id, rpcResponse.result());
         return rpcResponse.result();
     }
 
